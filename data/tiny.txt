@@ -1,0 +1,3 @@
+Artificial Intelligence (AI) is the broad field focused on creating systems that can perform tasks that normally require human intelligence—such as reasoning, problem-solving, understanding language, and making decisions. AI aims to mimic or enhance human cognitive abilities using algorithms and data.
+
+Machine Learning (ML) is a subset of AI that enables computers to learn patterns from data instead of being explicitly programmed. ML models improve their performance over time by analyzing examples, making predictions, and adjusting based on errors. While AI is the overall goal of intelligent behavior, ML is one of the main techniques used to achieve it.
