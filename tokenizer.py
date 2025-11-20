@@ -45,11 +45,29 @@ class BPETokenizer:
 
     def encode(self, text):
         # string -> token ids
-        pass
+        text = text.lower().strip()
+        words = text.split()
+
+        #convert word to list of characters
+        tokens_list = [self._word_to_chars(w)for w in words]
+
+        #apply merge rule in order
+        for merge_pair in self.merges:
+            tokens_list = self._merge_pair(tokens_list, merge_pair)
+        
+        #convert tokens into ids using vocab
+        token_ids = []
+        for token_list in tokens_list:
+            for token in token_list:
+                token_ids.append(self.vocab[token])
+        
+        return token_ids
 
     def decode(self, token_ids):
         # token ids -> string
-        pass
+        tokens = [self.inv_vocab[i] for i in token_ids]
+        text = ''.join(tokens)
+        return text
 
     def get_pair_frequencies(self, tokens_list):
         # get frequencies of adjacent token pairs
@@ -159,27 +177,39 @@ class KNN:
         predicted_label = self.majority_vote(k_neighbour)
 
         return predicted_label
-    
-# X = [
-#     [1, 2],
-#     [2, 3],
-#     [3, 3],
-#     [8, 7],
-#     [9, 8],
-#     [10, 8]
-# ]
 
-# y = ["A", "A", "A", "B", "B", "B"]
+if __name__ == "__main__":
+        
+    # X = [
+    #     [1, 2],
+    #     [2, 3],
+    #     [3, 3],
+    #     [8, 7],
+    #     [9, 8],
+    #     [10, 8]
+    # ]
 
-# knn = KNN(k=3)
-# knn.fit(X, y)
+    # y = ["A", "A", "A", "B", "B", "B"]
 
-# print(knn.predict([2, 2]))   # should give "A"
-# print(knn.predict([9, 7]))   # should give "B"
+    # knn = KNN(k=3)
+    # knn.fit(X, y)
+
+    # print(knn.predict([2, 2]))   # should give "A"
+    # print(knn.predict([9, 7]))   # should give "B"
 
 
-text = "this is a test. this test is fun."
-tokenizer = BPETokenizer(vocab_size=50)
-tokenizer.train(text)
-print(tokenizer.vocab)
-print(tokenizer.merges)
+    # text = "this is a test. this test is fun."
+    # tokenizer = BPETokenizer(vocab_size=50)
+    # tokenizer.train(text)
+    # print(tokenizer.vocab)
+    # print(tokenizer.merges)
+
+    text = "this is a test"
+    tokenizer = BPETokenizer(vocab_size=50)
+    tokenizer.train(text)
+
+    ids = tokenizer.encode("this is a test")
+    print(ids)
+
+    decoded_text = tokenizer.decode(ids)
+    print(decoded_text)
