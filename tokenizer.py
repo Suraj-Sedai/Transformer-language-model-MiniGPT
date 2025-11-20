@@ -8,9 +8,36 @@ class BPETokenizer:
 
     def train(self, text):
         # will implement BPE training here
-        text.lower()
+        text = text.lower()
         word = text.strip().split()
         tokens_list = [self._word_to_chars(w) for w in word]
+
+        #initialize vocab with unique char
+        for token_list in tokens_list:
+            for token in token_list:
+                if token not in self.vocab:
+                    self.vocab[token] = len(self.vocab)
+        
+        while len(self.vocab) < self.vocab_size:
+            #count frequency of adjacent paire
+            pair_counts = self.get_pair_frequencies(tokens_list)
+            #if no pair found stop
+            if not pair_counts:
+                break
+
+            #find the most frequent pair
+            best_pair = max(pair_counts, key=pair_counts.get)
+            #merge this pair in all words
+            tokens_list = self._merge_pair(tokens_list, best_pair)
+            #add merged token in vocabulary
+            new_token = best_pair[0] + best_pair[1]
+            if new_token not in self.vocab:
+                self.vocab[new_token] = len(self.vocab)
+            #save merge rule for encoding later
+            self.merges.append(best_pair)
+        #build inverse vocal id. token for decending
+        self.inv_vocab = {idx: token for token, idx in self.vocab.items()}
+
 
     def _word_to_chars(self, word):
         # turn a word into a list of char
@@ -28,7 +55,7 @@ class BPETokenizer:
         # get frequencies of adjacent token pairs
         pair_counts = dict()
         for token_list in tokens_list:
-            for i in range(len(token_list-2)):
+            for i in range(len(token_list)-1):
                 pair = (token_list[i], token_list[i+1])
 
                 if pair not in pair_counts:
@@ -57,7 +84,8 @@ class BPETokenizer:
                     i +=1
             #add processed word back to list
             new_tokens_list.append(merged_word)
-            return new_tokens_list
+        return new_tokens_list
+    
 class KNN:
     def __init__(self, k=3):
         self.k = k
@@ -85,7 +113,7 @@ class KNN:
     
     def get_k_nearest_neighbors(self, training_data, training_labels, new_point, k):
         distances = []
-        for i in range (len(training_data)-1):
+        for i in range (len(training_data)):
             #get current example from the training dataset
             current_point = training_data[i]
 
@@ -132,19 +160,26 @@ class KNN:
 
         return predicted_label
     
-X = [
-    [1, 2],
-    [2, 3],
-    [3, 3],
-    [8, 7],
-    [9, 8],
-    [10, 8]
-]
+# X = [
+#     [1, 2],
+#     [2, 3],
+#     [3, 3],
+#     [8, 7],
+#     [9, 8],
+#     [10, 8]
+# ]
 
-y = ["A", "A", "A", "B", "B", "B"]
+# y = ["A", "A", "A", "B", "B", "B"]
 
-knn = KNN(k=3)
-knn.fit(X, y)
+# knn = KNN(k=3)
+# knn.fit(X, y)
 
-print(knn.predict([2, 2]))   # should give "A"
-print(knn.predict([9, 7]))   # should give "B"
+# print(knn.predict([2, 2]))   # should give "A"
+# print(knn.predict([9, 7]))   # should give "B"
+
+
+text = "this is a test. this test is fun."
+tokenizer = BPETokenizer(vocab_size=50)
+tokenizer.train(text)
+print(tokenizer.vocab)
+print(tokenizer.merges)
