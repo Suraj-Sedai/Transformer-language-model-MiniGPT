@@ -178,31 +178,33 @@ class KNN:
 
         return predicted_label
 
+
+'''Test cases for all the clasees and functions'''
 if __name__ == "__main__":
         
-    # X = [
-    #     [1, 2],
-    #     [2, 3],
-    #     [3, 3],
-    #     [8, 7],
-    #     [9, 8],
-    #     [10, 8]
-    # ]
+    X = [
+        [1, 2],
+        [2, 3],
+        [3, 3],
+        [8, 7],
+        [9, 8],
+        [10, 8]
+    ]
 
-    # y = ["A", "A", "A", "B", "B", "B"]
+    y = ["A", "A", "A", "B", "B", "B"]
 
-    # knn = KNN(k=3)
-    # knn.fit(X, y)
+    knn = KNN(k=3)
+    knn.fit(X, y)
 
-    # print(knn.predict([2, 2]))   # should give "A"
-    # print(knn.predict([9, 7]))   # should give "B"
+    print(knn.predict([2, 2]))   # should give "A"
+    print(knn.predict([9, 7]))   # should give "B"
 
 
-    # text = "this is a test. this test is fun."
-    # tokenizer = BPETokenizer(vocab_size=50)
-    # tokenizer.train(text)
-    # print(tokenizer.vocab)
-    # print(tokenizer.merges)
+    text = "this is a test. this test is fun."
+    tokenizer = BPETokenizer(vocab_size=50)
+    tokenizer.train(text)
+    print(tokenizer.vocab)
+    print(tokenizer.merges)
 
     text = "this is a test"
     tokenizer = BPETokenizer(vocab_size=50)
