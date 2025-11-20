@@ -34,5 +34,27 @@ class BPETokenizer:
                     pair_counts[pair] = 1
                 else:
                     pair_counts[pair] +=1
-        
         return pair_counts
+    
+    def _merge_pair(self, tokens_list,pair_to_merge):
+        #pair to merge in tuple
+        a = pair_to_merge[0]
+        b = pair_to_merge[1]
+        new_tokens_list = []
+        #processing each word one by one
+        for token_list in tokens_list:
+            merged_word = []
+            i = 0
+            while i < len(token_list):
+                if i < len(token_list)-1 and token_list[i] == a and token_list[i + 1] == b:
+                    #merge two token
+                    merged_token = a+b
+                    merged_word.append(merged_token)
+                    i +=2
+                else:
+                    merged_word.append(token_list[i])
+                    i +=1
+            #add processed word back to list
+            new_tokens_list.append(merged_word)
+            return new_tokens_list
+        
