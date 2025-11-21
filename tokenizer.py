@@ -315,6 +315,70 @@ class SelfAttention:
 
         return output
         
+class MultiHeadAttention:
+    def __init__(self, embed_dim, num_heads):
+        # store parameters
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+
+        # compute size of each head
+        self.head_dim = embed_dim // num_heads
+
+        # create multiple SelfAttention heads
+        self.heads = []
+        for _ in range(num_heads):
+            # each head uses a smaller embedding dimension
+            head = SelfAttention(self.head_dim)
+            self.heads.append(head)
+
+        # final linear projection after concatenation
+        self.Wo = random_matrix((embed_dim, embed_dim))
+
+    def concat_along_last_dim(self, head_outputs):
+        # head_outputs: list of [seq_len x head_dim] arrays
+        seq_len = len(head_outputs[0])
+        num_heads = len(head_outputs)
+        head_dim = len(head_outputs[0][0])
+
+        # initialize result
+        result = []
+
+        # loop over tokens
+        for i in range(seq_len):
+            concatenated = []
+            for head in head_outputs:
+                concatenated.extend(head[i])  # append head vector for token i
+            result.append(concatenated)
+
+        return result
+
+    def forward(self, X):
+        # X shape: [seq_len, embed_dim]
+
+        head_outputs = []
+
+        for head in self.heads:
+            # for each head, run attention
+            # BUT: X must first be projected down to head_dim
+
+            # Create Q,K,V using head weight matrices
+            # (selfattention already does this)
+
+            out = head.forward(X)  
+            # shape: [seq_len, head_dim]
+
+            head_outputs.append(out)
+
+        # concatenate outputs from all heads
+        # final shape: [seq_len, embed_dim]
+        concatenated = self.concat_along_last_dim(head_outputs)
+
+        # final linear projection
+        final_output = []
+        for vec in concatenated:
+            final_output.append(matmul(vec, self.Wo))
+
+        return final_output
 
     
 '''Test cases for all the clasees and functions'''
