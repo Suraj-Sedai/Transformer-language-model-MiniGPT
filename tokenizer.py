@@ -1,12 +1,37 @@
 from math import sqrt
 import random
 
+'''Some helper functions'''
+
 def random_matrix(shape):
     rows, cols = shape
     return [
         [random.uniform(-0.01, 0.01) for _ in range(cols)]
         for _ in range(rows)
     ]
+def matmul(vec, mat):
+    """
+    vec: [d]
+    mat: [d x d_out]
+    returns: [d_out]
+    """
+    out = []
+    for col in range(len(mat[0])):      # loop over output dimension
+        s = 0
+        for row in range(len(vec)):     # dot product
+            s += vec[row] * mat[row][col]
+        out.append(s)
+    return out
+
+# v = [1,2,3]
+# m = [
+#     [1,0],
+#     [0,1],
+#     [1,1]
+# ]
+# print(matmul(v, m)) 
+
+
 class BPETokenizer:
     def __init__(self, vocab_size=1000):
         self.vocab_size = vocab_size
@@ -207,9 +232,89 @@ class PosEmbedding:
         length = len(token_ids)
         #add position bector to each token embedding
         return [self.P[pos] for pos in range(length)]
+
+
+
+'''Implement Q, K, V Weight Matrices + Compute Q, K, V vectors''' 
+class SelfAttention:
+    def __init__(self, embed_dim):
+        self.embed_dim = embed_dim
+
+        # Weight matrices: [embed_dim x embed_dim]
+        self.W_q = random_matrix((embed_dim, embed_dim))
+        self.W_k = random_matrix((embed_dim, embed_dim))
+        self.W_v = random_matrix((embed_dim, embed_dim))
+
+    def forward(self, X):
+        """
+        X = list of token vectors, shape: [seq_len, embed_dim]
+        returns Q, K, V each of shape: [seq_len, embed_dim]
+        """
+
+        Q = []
+        K = []
+        V = []
+
+        for token_vec in X:
+            q = matmul(token_vec, self.W_q)
+            k = matmul(token_vec, self.W_k)
+            v = matmul(token_vec, self.W_v)
+
+            Q.append(q)
+            K.append(k)
+            V.append(v)
+
+        return self.compute_attention(Q, K, V)
+
     
+    def dot(self,a,b):
+        sum = 0
+        for i in range(len(a)):
+            sum += a[i] * b[i]
+        return sum
+    
+    def soft_max(self, scores):
+        exps = []
+        for s in scores:
+            exps.append(exp(s))
+        total = sum(exps)
+        probs = []
+        for e in exps:
+            probs.append(e/total)
+        
+        return probs
 
+    def attention_scores(self, Q, K):
+        matrix = []
+        for qi in Q:
+            row = []
+            for kj in K:
+                row.append(self.dot(qi, kj))
+            matrix.append(row)
+        return matrix
+    
+    def weighted_sum(self, weights, V):
+        dim = len(V[0])
+        result = [0.0 for _ in range(dim)]
+        for i in range(len(V)):
+            for d in range(dim):
+                result[d] += weights[i] * V[i][d]
+        return result
+    
+    def compute_attention(self,Q,K,V):
+        scores = self.attention_scores(Q,K)
+        # scale
+        for i in range(len(scores)):
+            for j in range(len(scores[i])):
+                scores[i][j] /= sqrt(self.embed_dim)
+        output = []
+        for row in scores:
+            w = self.soft_max(row)
+            out_vec = self.weighted_sum(w, V)
+            output.append(out_vec)
 
+        return output
+        
 
     
 '''Test cases for all the clasees and functions'''
@@ -268,3 +373,18 @@ if __name__ == "__main__":
     ]
 
     print(final_vectors)
+    
+    #Fake tiny example
+    embed_dim = 4
+    X = [
+        [0.1, 0.2, 0.3, 0.4],
+        [0.5, 0.4, 0.3, 0.2]
+    ]
+
+    att = SelfAttention(embed_dim)
+    Q, K, V = att.forward(X)
+
+    print("Q:", Q)
+    print("K:", K)
+    print("V:", V)
+
