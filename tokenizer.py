@@ -1,4 +1,12 @@
 from math import sqrt
+import random
+
+def random_matrix(shape):
+    rows, cols = shape
+    return [
+        [random.uniform(-0.01, 0.01) for _ in range(cols)]
+        for _ in range(rows)
+    ]
 class BPETokenizer:
     def __init__(self, vocab_size=1000):
         self.vocab_size = vocab_size
@@ -178,7 +186,32 @@ class KNN:
 
         return predicted_label
 
+class TokenEmbedding:
+    def __init__(self, vocab_size, embed_dim):
+        #create embedding matrix with random small values
+        self.W = random_matrix(shape=(vocab_size, embed_dim))
+    
+    def forward(self, token_ids):
+        #token_ids : like [ 8,6,4,11]
+        embeddings = []
+        for id in token_ids:
+            #lookup = row from embedding matrix
+            vector = self.W[id]
+            embeddings.append(vector)
+        return embeddings
+    
+class PosEmbedding:
+    def __init__(self,max_len, embed_dim):
+        self.P = random_matrix(shape=(max_len, embed_dim))
+    def forward(self, token_ids):
+        length = len(token_ids)
+        #add position bector to each token embedding
+        return [self.P[pos] for pos in range(length)]
+    
 
+
+
+    
 '''Test cases for all the clasees and functions'''
 if __name__ == "__main__":
         
@@ -214,4 +247,24 @@ if __name__ == "__main__":
     print(ids)
 
     decoded_text = tokenizer.decode(ids)
-    print(decoded_text)
+    # print(decoded_text)
+
+
+
+    def add_vectors(a,b):
+        return [a[i] + b[i] for i in range(len(a))]
+    
+    token_embed = TokenEmbedding(vocab_size=1000, embed_dim=32)
+    pos_embed = PosEmbedding(max_len=512, embed_dim=32)
+
+    ids = [8,6,4,11]
+
+    token_vectors = token_embed.forward(ids)
+    pos_vectors   = pos_embed.forward(ids)
+
+    final_vectors = [
+        add_vectors(token_vectors[i], pos_vectors[i])
+        for i in range(len(ids))
+    ]
+
+    print(final_vectors)
