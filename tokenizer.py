@@ -406,9 +406,7 @@ class MultiHeadAttention:
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
 
-        self.heads = []
-        for _ in range(num_heads):
-            self.heads.append(AttentionHead(embed_dim, self.head_dim))
+        self.heads = [ AttentionHead(embed_dim, self.head_dim) for _ in range(num_heads) ]
 
         # 🔥 Final linear layer after concatenation
         self.Wo = random_matrix((embed_dim, embed_dim))
@@ -467,7 +465,8 @@ def relu(vec):
 def add_vectors(a, b):
     """Element-wise add two vectors (same length)."""
     return [a[i] + b[i] for i in range(len(a))]
-
+def add_vectors_list(A, B):
+    return [add_vectors(A[i], B[i]) for i in range(len(A))]
 class FeedForward:
     def __init__(self, embed_dim, hidden_dim):
         # correct shapes
@@ -496,60 +495,53 @@ class FeedForward:
 
         return out
 
-
-class TransformerBlock:
-    def __init__(self, embed_dim, num_heads, ffn_hidden_dim):
-        self.mha = MultiHeadAttention(embed_dim, num_heads)
-        self.ffn = FeedForward(embed_dim, ffn_hidden_dim)
-        self.embed_dim = embed_dim
+class LayerNorm:
+    def __init__(self, dim, eps=1e-5):
+        self.dim = dim
+        self.eps = eps
+        # Learnable parameters (gamma, beta)
+        self.gamma = [1.0] * dim
+        self.beta = [0.0] * dim
 
     def forward(self, X):
-        # Multi-head attention
-        attn_output = self.mha.forward(X)
+        # X is list of vectors: [seq_len][dim]
+        out = []
+        for vec in X:
+            mean = sum(vec) / self.dim
+            var = sum((v - mean)**2 for v in vec) / self.dim
+            std = (var + self.eps) ** 0.5
 
-        # Residual + LayerNorm
-        X = [add_vectors(X[i], attn_output[i]) for i in range(len(X))]
-        X = layer_norm(X)
+            norm = [ (vec[i] - mean) / std for i in range(self.dim) ]
+            out.append([ norm[i] * self.gamma[i] + self.beta[i] for i in range(self.dim) ])
 
-        # Feed-forward
-        ffn_output = self.ffn.forward(X)
-
-        # Second residual + layer norm
-        X = [add_vectors(X[i], ffn_output[i]) for i in range(len(X))]
-        X = layer_norm(X)
-
-        return X
+        return out
 
 
-# ---- BUILD INPUT X ----
-tokenizer = BPETokenizer(vocab_size=1000)
-tokenizer.train("this is a test corpus for building tiny gpt tokenizer")
-token_embedding = TokenEmbedding(vocab_size=1000, embed_dim=4)
-pos_embedding   = PosEmbedding(max_len=50, embed_dim=4)
+class TransformerBlock:
+    def __init__(self, embed_dim, num_heads, ff_hidden_dim):
+        self.ln1 = LayerNorm(embed_dim)
+        self.mha = MultiHeadAttention(embed_dim, num_heads)
+        self.ln2 = LayerNorm(embed_dim)
+        self.ffn = FeedForward(embed_dim, ff_hidden_dim)
 
-ids = tokenizer.encode("this is a test")
+    def forward(self, X):
+        # LayerNorm + MHA + Residual
+        ln1_out = self.ln1.forward(X)
+        attn_out = self.mha.forward(ln1_out)
+        X1 = add_vectors_list(X, attn_out)
 
-token_embed = token_embedding.forward(ids)
-pos_embed = pos_embedding.forward(ids)
+        # LayerNorm + FeedForward + Residual
+        ln2_out = self.ln2.forward(X1)
+        ff_out = self.ffn.forward(ln2_out)
+        X2 = add_vectors_list(X1, ff_out)
 
-# Add token+pos embeddings
-X = []
-for i in range(len(token_embed)):
-    vec = []
-    for a, b in zip(token_embed[i], pos_embed[i]):
-        vec.append(a + b)
-    X.append(vec)
-
-# ---- RUN TRANSFORMER BLOCK ----
-tb = TransformerBlock(embed_dim=4, num_heads=2, ffn_hidden_dim=16)
-out = tb.forward(X)
-
-print("block out shape:", len(out), len(out[0]))
-print(out)
+        return X2
 
 
 
-# '''Test cases for all the clasees and functions'''
+
+
+'''Test cases for all the clasees and functions'''
 # if __name__ == "__main__":
         
 #     X = [
@@ -620,3 +612,62 @@ print(out)
 #     print("K:", K)
 #     print("V:", V)
 
+    # # ---- BUILD INPUT X ----
+    # tokenizer = BPETokenizer(vocab_size=1000)
+    # tokenizer.train("this is a test corpus for building tiny gpt tokenizer")
+    # token_embedding = TokenEmbedding(vocab_size=1000, embed_dim=4)
+    # pos_embedding   = PosEmbedding(max_len=50, embed_dim=4)
+
+    # ids = tokenizer.encode("this is a test")
+
+    # token_embed = token_embedding.forward(ids)
+    # pos_embed = pos_embedding.forward(ids)
+
+    # # Add token+pos embeddings
+    # X = []
+    # for i in range(len(token_embed)):
+    #     vec = []
+    #     for a, b in zip(token_embed[i], pos_embed[i]):
+    #         vec.append(a + b)
+    #     X.append(vec)
+
+    # # ---- RUN TRANSFORMER BLOCK ----
+    # tb = TransformerBlock(embed_dim=4, num_heads=2, ffn_hidden_dim=16)
+    # out = tb.forward(X)
+
+    # print("block out shape:", len(out), len(out[0]))
+    # print(out)
+
+
+    # print("block out shape:", len(out), len(out[0]))
+    # print(out)
+
+
+    # print("Testing full TransformerBlock...")
+    # tb = TransformerBlock(embed_dim=4, num_heads=2, ff_hidden_dim=16)
+
+    # out = tb.forward(X)
+    # print("block out shape:", len(out), len(out[0]))
+    # print(out)
+
+    # print("mha out shape:", len(out), len(out[0]))  # expect seq_len x embed_dim
+
+    # small test X (seq_len=4, embed_dim must match your token/embed dims)
+
+
+    # embed_dim = 4
+    # num_heads = 2  # head_dim = 2
+    # token_embedding = TokenEmbedding(vocab_size=100, embed_dim=embed_dim)
+    # pos_embedding = PosEmbedding(max_len=20, embed_dim=embed_dim)
+    # tokenizer = BPETokenizer(vocab_size=100)
+    # tokenizer.train("this is a test")   # small corpus ok
+
+    # ids = tokenizer.encode("this is a test")
+    # token_vectors = token_embedding.forward(ids)
+    # pos_vectors   = pos_embedding.forward(ids)
+    # X = [[a+b for a,b in zip(token_vectors[i], pos_vectors[i])] for i in range(len(ids))]
+
+    # mha = MultiHeadAttention(embed_dim=embed_dim, num_heads=num_heads)
+    # out = mha.forward(X)
+    # tb = TransformerBlock(embed_dim=4, num_heads=2, ff_hidden_dim=16)
+    # out = tb.forward(X)
