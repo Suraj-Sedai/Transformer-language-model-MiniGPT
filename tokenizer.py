@@ -537,9 +537,42 @@ class TransformerBlock:
 
         return X2
 
+class TransformerModel:
+    def __init__(self, vocab_size, max_len, embed_dim, num_heads, num_layers, ffn_hidden_dim):
+        self.token_embed = TokenEmbedding(vocab_size, embed_dim)
+        self.pos_embed = PosEmbedding(max_len, embed_dim)
+        self.blocks = [ TransformerBlock(embed_dim, num_heads, ffn_hidden_dim)
+                        for _ in range(num_layers) ]
+        # LM head: embed_dim x vocab_size
+        self.W_out = random_matrix((embed_dim, vocab_size))
+        self.embed_dim = embed_dim
 
 
+    def forward(self, token_ids):
+        # 1. embeddings
+        token_vectors = self.token_embed.forward(token_ids)   # [seq_len, embed_dim]
+        pos_vectors = self.pos_embed.forward(token_ids)       # [seq_len, embed_dim]
+        X = [ [token_vectors[i][d] + pos_vectors[i][d] for d in range(self.embed_dim)]
+              for i in range(len(token_ids)) ]
 
+        # 2. transformer stack
+        for block in self.blocks:
+            X = block.forward(X)   # shape preserved [seq_len, embed_dim]
+
+        # 3. logits: per token vector, produce vocab logits
+        logits = []
+        for vec in X:
+            # matmul(vec, W_out) -> length vocab_size
+            scores = matmul(vec, self.W_out)
+            logits.append(scores)
+
+        return logits   # [seq_len, vocab_size]
+model = TransformerModel(vocab_size=200, max_len=32, embed_dim=8, num_heads=2, num_layers=2, ffn_hidden_dim=32)
+tokenizer = BPETokenizer(vocab_size=200)
+tokenizer.train("this is a tiny corpus for testing")
+ids = tokenizer.encode("this is a test")
+logits = model.forward(ids)
+print("logits shape:", len(logits), len(logits[0]))   # expect seq_len x vocab_size
 
 '''Test cases for all the clasees and functions'''
 # if __name__ == "__main__":
