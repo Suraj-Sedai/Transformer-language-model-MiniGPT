@@ -44,6 +44,19 @@ def layer_norm(X):
         output.append(normalized)
     return output
 
+def softmax(x):
+    e = np.exp(x - np.max(x))  # for numerical stability
+    return e / e.sum(axis=-1, keepdims=True)
+
+def cross_entropy_loss(logits, target_id):
+    probs = softmax(logits)
+    return -np.log(probs[target_id] + 1e-9)  # avoid log(0)
+
+def grad_cross_entropy(logits, target_id):
+    probs = softmax(logits)
+    probs[target_id] -= 1
+    return probs  # gradient w.r.t logits
+
 class BPETokenizer:
     def __init__(self, vocab_size=1000):
         self.vocab_size = vocab_size
@@ -113,8 +126,8 @@ class BPETokenizer:
 
 
     def decode(self, token_ids):
-        tokens = [self.inv_vocab[i] for i in token_ids]
-        text = ''.join(tokens)
+        tokens = [self.inv_vocab.get(i, "<unk>") for i in token_ids]
+        text = ' '.join(tokens)
         return text
 
 
@@ -290,14 +303,10 @@ class SelfAttention:
         return sum
     
     def soft_max(self, scores):
-        exps = []
-        for s in scores:
-            exps.append(exp(s))
-        total = sum(exps)
-        probs = []
-        for e in exps:
-            probs.append(e/total)
-        
+        scores = np.array(scores, dtype=np.float64)   # convert to array
+        scores = scores - np.max(scores)             # numerical stability
+        exps = np.exp(scores)                         # numpy exp works on arrays
+        probs = exps / np.sum(exps, axis=-1, keepdims=True)
         return probs
 
     def attention_scores(self, Q, K):
@@ -358,13 +367,10 @@ class AttentionHead:
         return matrix
 
     def soft_max(self, scores):
-        exps = []
-        for s in scores:
-            exps.append(exp(s))
-        total = sum(exps)
-        probs = []
-        for e in exps:
-            probs.append(e / total)
+        scores = np.array(scores, dtype=np.float64)   # convert to array
+        scores = scores - np.max(scores)             # numerical stability
+        exps = np.exp(scores)                         # numpy exp works on arrays
+        probs = exps / np.sum(exps, axis=-1, keepdims=True)
         return probs
 
     def weighted_sum(self, weights, V):
@@ -500,80 +506,59 @@ class LayerNorm:
             var = sum((v - mean)**2 for v in vec) / self.dim
             std = (var + self.eps) ** 0.5
 
-            norm = [ (vec[i] - mean) / std for i in range(self.dim) ]
-            out.append([ norm[i] * self.gamma[i] + self.beta[i] for i in range(self.dim) ])
+            norm = [ (vec[i] - mean) / std for i in range(len(vec)) ]
+            out.append([ norm[i] * self.gamma[i] + self.beta[i] for i in range(len(vec)) ])
 
         return out
 
 class TransformerBlock:
-    def __init__(self, embed_dim, hidden_dim):
-        self.embed_dim = embed_dim
-
-        # --- Q, K, V projection weights ---
-        limit = 1 / np.sqrt(embed_dim)
-        self.Wq = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
-        self.Wk = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
-        self.Wv = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
-
-        self.bq = np.zeros((embed_dim,))
-        self.bk = np.zeros((embed_dim,))
-        self.bv = np.zeros((embed_dim,))
-
-        # reuse your attention layer
-        self.attn = SelfAttention(hidden_dim)
-
-        # feedforward layer
-        self.ff = FeedForward(embed_dim, hidden_dim)
+    def __init__(self, embed_dim, num_heads, ff_hidden_dim):
+        self.ln1 = LayerNorm(embed_dim)
+        self.mha = MultiHeadAttention(embed_dim, num_heads)
+        self.ln2 = LayerNorm(embed_dim)
+        self.ff = FeedForward(embed_dim, ff_hidden_dim)
 
     def forward(self, X):
-        # X shape: (batch, seq_len, embed_dim)
-        B, T, D = X.shape
+        # LayerNorm + MultiHeadAttention
+        normed = self.ln1.forward(X)
+        attn_out = self.mha.forward(normed)  # uses its own Wq, Wk, Wv
 
-        # Linear projections
-        Q = np.matmul(X, self.Wq) + self.bq
-        K = np.matmul(X, self.Wk) + self.bk
-        V = np.matmul(X, self.Wv) + self.bv
+        # Residual connection
+        x2 = add_vectors_list(X, attn_out)
 
-        # Self-attention
-        attn_out, weights = self.attn.forward(Q, K, V)
+        # LayerNorm + FeedForward
+        normed2 = self.ln2.forward(x2)
+        ff_out = self.ff.forward(normed2)
 
-        # Feedforward
-        ff_out = self.ff.forward(attn_out)
+        # Residual connection
+        out = add_vectors_list(x2, ff_out)
+        return out
 
-        return ff_out
 
 class TransformerModel:
-    def __init__(self, vocab_size, embed_dim, max_len=128, num_blocks=2, hidden_dim=64):
-        self.vocab_size = vocab_size
+    def __init__(self, vocab_size, embed_dim, num_heads, num_layers, ffn_hidden_dim, max_len=128):
+        self.token_embed = TokenEmbedding(vocab_size, embed_dim)
+        self.pos_embed = PosEmbedding(max_len, embed_dim)
+        self.blocks = [TransformerBlock(embed_dim, num_heads, ffn_hidden_dim)
+                       for _ in range(num_layers)]
+        self.Wo = random_matrix((embed_dim, vocab_size))
+        self.bo = np.zeros(vocab_size)
         self.embed_dim = embed_dim
+        self.vocab_size = vocab_size
         self.max_len = max_len
 
-        # --- Token Embeddings ---
-        limit = 1 / np.sqrt(embed_dim)
-        self.token_embedding = np.random.uniform(-limit, limit, (vocab_size, embed_dim))
-
-        # --- Positional Embeddings ---
-        self.pos_embedding = np.random.uniform(-limit, limit, (max_len, embed_dim))
-
-        # --- Transformer Blocks ---
-        self.blocks = [
-            TransformerBlock(embed_dim, hidden_dim)
-            for _ in range(num_blocks)
-        ]
-
-        # --- Final LM Head (linear layer) ---
-        self.Wo = np.random.uniform(-limit, limit, (embed_dim, vocab_size))
-        self.bo = np.zeros((vocab_size,))
 
     def forward(self, ids):
         # ids shape: (seq_len,)
         T = len(ids)
 
         # Make embedding matrix X: (1, T, embed_dim)
-        X = np.zeros((1, T, self.embed_dim))
+        X = np.zeros((1, T, self.embed_dim))  # batch=1
 
         for i, tok in enumerate(ids):
-            X[0, i] = self.token_embedding[tok] + self.pos_embedding[i]
+            X[0, i] = np.array(self.token_embed.forward([tok])[0]) + \
+                    np.array(self.pos_embed.forward([tok])[0])
+
 
         # Pass through transformer blocks
         for block in self.blocks:
@@ -632,26 +617,60 @@ class MiniTransformer:
 
         return X
 
-training_text = """
-hello world this is a tiny training dataset
-hello there how are you
-i am building a tiny transformer language model
-"""
+# Example tiny corpus
+text = "hello world hello transformer model mini gpt"
 
-tokenizer = BPETokenizer(vocab_size=1000)
-tokenizer.train(training_text)
+# Initialize and train tokenizer
+tokenizer = BPETokenizer(vocab_size=50)
+tokenizer.train(text)
 
-# ACTUAL vocab size after training
-vocab_size = len(tokenizer.vocab)
+# Convert text to token IDs
+token_ids = tokenizer.encode(text)  # e.g., [1, 5, 1, 20, 3, ...]
+seq_len = 4  # number of tokens in input
+X_train = []
+y_train = []
 
-model = TransformerModel(vocab_size, embed_dim=64)
+for i in range(len(token_ids) - seq_len):
+    X_train.append(token_ids[i:i+seq_len])
+    y_train.append(token_ids[i+seq_len])
 
-prompt = "hello"
+X_train = np.array(X_train)  # shape: (num_samples, seq_len)
+y_train = np.array(y_train)  # shape: (num_samples,)
+
+lr = 0.01  # learning rate
+model = TransformerModel(vocab_size=tokenizer.vocab_size, embed_dim=16,
+                         num_heads=2, num_layers=2, ffn_hidden_dim=32)
+
+epochs = 100
+
+for epoch in range(epochs):
+    total_loss = 0
+    for x_seq, y_target in zip(X_train, y_train):
+        # --- Forward pass ---
+        logits = model.forward(x_seq)          # shape: (seq_len, vocab)
+        last_logits = logits[-1]               # predict next token
+
+        # --- Compute loss ---
+        loss = cross_entropy_loss(last_logits, y_target)
+        total_loss += loss
+
+        # --- Backprop (VERY simplified, just for demonstration) ---
+        # Normally, you would compute gradients for all model parameters.
+        # For now, we can just show how the loss decreases.
+
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch}, loss: {total_loss/len(X_train):.4f}")
+
+# Start with a prompt
+prompt = "hello world"
 ids = tokenizer.encode(prompt)
 
-generated = model.generate(ids, max_new_tokens=20, tokenizer=tokenizer)
+for _ in range(10):  # generate 10 tokens
+    logits = model.forward(ids)
+    next_id = np.argmax(logits[-1])  # greedy decoding
+    ids.append(next_id)
 
-print(tokenizer.decode(generated))
+print(tokenizer.decode(ids))
 
 
 '''Test cases for all the clasees and functions'''
@@ -791,3 +810,24 @@ print(tokenizer.decode(generated))
     # ids = tokenizer.encode("this is a test")
     # logits = model.forward(ids)
     # print("logits shape:", len(logits), len(logits[0]))   # expect seq_len x vocab_size
+    
+    # training_text = """
+    # hello world this is a tiny training dataset
+    # hello there how are you
+    # i am building a tiny transformer language model
+    # """
+
+    # tokenizer = BPETokenizer(vocab_size=1000)
+    # tokenizer.train(training_text)
+
+    # # ACTUAL vocab size after training
+    # vocab_size = len(tokenizer.vocab)
+
+    # model = TransformerModel(vocab_size, embed_dim=64)
+
+    # prompt = "hello"
+    # ids = tokenizer.encode(prompt)
+
+    # generated = model.generate(ids, max_new_tokens=20, tokenizer=tokenizer)
+
+    # print(tokenizer.decode(generated))
