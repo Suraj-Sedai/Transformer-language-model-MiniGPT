@@ -477,10 +477,12 @@ def add_vectors_list(A, B):
     return [add_vectors(A[i], B[i]) for i in range(len(A))]
 class FeedForward:
     def __init__(self, embed_dim, hidden_dim):
-        self.W1 = np.random.randn(embed_dim, hidden_dim) / np.sqrt(embed_dim)
-        self.b1 = np.zeros((hidden_dim,))
-        self.W2 = np.random.randn(hidden_dim, embed_dim) / np.sqrt(hidden_dim)
-        self.b2 = np.zeros((embed_dim,))
+        self.W1 = np.random.uniform(-0.1, 0.1, (embed_dim, hidden_dim))
+        self.b1 = np.zeros(hidden_dim)
+
+        self.W2 = np.random.uniform(-0.1, 0.1, (hidden_dim, embed_dim))
+        self.b2 = np.zeros(embed_dim)
+
 
     def forward(self, X):
         # X shape: (B, T, D)
@@ -519,21 +521,24 @@ class TransformerBlock:
         self.ff = FeedForward(embed_dim, ff_hidden_dim)
 
     def forward(self, X):
+        # if batch dim exists, drop it for simplicity
+        if isinstance(X, np.ndarray) and X.ndim == 3:
+            X = X[0].tolist()  # shape -> [seq_len, embed_dim]
+
         # LayerNorm + MultiHeadAttention
         normed = self.ln1.forward(X)
-        attn_out = self.mha.forward(normed)  # uses its own Wq, Wk, Wv
+        attn_out = self.mha.forward(normed)  # shape: [seq_len, embed_dim]
 
-        # Residual connection
+        # Residual
         x2 = add_vectors_list(X, attn_out)
 
         # LayerNorm + FeedForward
         normed2 = self.ln2.forward(x2)
         ff_out = self.ff.forward(normed2)
 
-        # Residual connection
+        # Residual
         out = add_vectors_list(x2, ff_out)
         return out
-
 
 class TransformerModel:
     def __init__(self, vocab_size, embed_dim, num_heads, num_layers, ffn_hidden_dim, max_len=128):
@@ -549,25 +554,18 @@ class TransformerModel:
 
 
     def forward(self, ids):
-        # ids shape: (seq_len,)
-        T = len(ids)
+        # ids: list of token IDs
+        tok_vecs = self.token_embed.forward(ids)
+        pos_vecs = self.pos_embed.forward(ids)
+        X = [add_vectors(tok_vecs[i], pos_vecs[i]) for i in range(len(ids))]  # seq_len x embed_dim
 
-        # Make embedding matrix X: (1, T, embed_dim)
-        X = np.zeros((1, T, self.embed_dim))  # batch=1
-
-        for i, tok in enumerate(ids):
-            X[0, i] = np.array(self.token_embed.forward([tok])[0]) + \
-                    np.array(self.pos_embed.forward([tok])[0])
-
-
-        # Pass through transformer blocks
+        # pass through blocks
         for block in self.blocks:
-            X = block.forward(X)
+            X = block.forward(X)  # output: seq_len x embed_dim
 
-        # Final linear projection → logits
-        logits = np.matmul(X, self.Wo) + self.bo   # (1, T, vocab_size)
-
-        return logits[0]  # remove batch dimension
+        # final linear layer
+        logits = np.matmul(X, self.Wo) + self.bo  # seq_len x vocab_size
+        return logits
 
     def generate(self, idx, max_new_tokens, tokenizer):
         """
@@ -642,35 +640,61 @@ model = TransformerModel(vocab_size=tokenizer.vocab_size, embed_dim=16,
                          num_heads=2, num_layers=2, ffn_hidden_dim=32)
 
 epochs = 100
+import numpy as np
 
+# --- Hyperparameters ---
+lr = 0.1        # learning rate
+epochs = 200
+seq_len = 5     # small sequence length for tiny corpus
+
+# Assume you already have:
+# model: TransformerModel instance
+# tokenizer: BPETokenizer instance
+# text: training text (string)
+
+# Encode the text into token IDs
+ids = tokenizer.encode(text)
+
+# Training loop (simple next-token prediction)
 for epoch in range(epochs):
-    total_loss = 0
-    for x_seq, y_target in zip(X_train, y_train):
-        # --- Forward pass ---
-        logits = model.forward(x_seq)          # shape: (seq_len, vocab)
-        last_logits = logits[-1]               # predict next token
+    total_loss = 0.0
+    for i in range(len(ids) - seq_len):
+        x_ids = ids[i:i+seq_len]
+        y_id = ids[i+seq_len]
 
-        # --- Compute loss ---
-        loss = cross_entropy_loss(last_logits, y_target)
+        logits = model.forward(x_ids)
+        pred = logits[-1]  # last token logits
+
+        # softmax & loss
+        exp_pred = np.exp(pred - np.max(pred))
+        probs = exp_pred / np.sum(exp_pred)
+        loss = -np.log(probs[y_id] + 1e-8)
         total_loss += loss
 
-        # --- Backprop (VERY simplified, just for demonstration) ---
-        # Normally, you would compute gradients for all model parameters.
-        # For now, we can just show how the loss decreases.
+        # gradient for Wo & bo
+        grad = probs.copy()
+        grad[y_id] -= 1.0
+
+        # last hidden vector
+        X_block = model.blocks[-1].forward(
+            [add_vectors(model.token_embed.forward(x_ids)[-1],
+                         model.pos_embed.forward(x_ids)[-1])]
+        )
+        h = np.array(X_block[-1])
+
+        # update
+        model.Wo -= lr * np.outer(h, grad)
+        model.bo -= lr * grad
 
     if epoch % 10 == 0:
-        print(f"Epoch {epoch}, loss: {total_loss/len(X_train):.4f}")
+        print(f"Epoch {epoch}, loss: {total_loss / len(ids):.4f}")
 
-# Start with a prompt
+
 prompt = "hello world"
 ids = tokenizer.encode(prompt)
+generated_ids = model.generate(ids, max_new_tokens=20, tokenizer=tokenizer)
+print(tokenizer.decode(generated_ids))
 
-for _ in range(10):  # generate 10 tokens
-    logits = model.forward(ids)
-    next_id = np.argmax(logits[-1])  # greedy decoding
-    ids.append(next_id)
-
-print(tokenizer.decode(ids))
 
 
 '''Test cases for all the clasees and functions'''
