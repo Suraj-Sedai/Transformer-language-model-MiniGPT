@@ -1,5 +1,6 @@
 from math import sqrt,exp
 import random
+import numpy as np
 
 '''Some helper functions'''
 
@@ -51,36 +52,40 @@ class BPETokenizer:
         self.merges = []     # list of merge rules
 
     def train(self, text):
-        # will implement BPE training here
         text = text.lower()
-        word = text.strip().split()
-        tokens_list = [self._word_to_chars(w) for w in word]
 
-        #initialize vocab with unique char
+        # ---- special tokens ----
+        for special in ["<unk>", "<pad>", " "]:
+            if special not in self.vocab:
+                self.vocab[special] = len(self.vocab)
+
+        # ---- split into words ----
+        words = text.strip().split()
+        tokens_list = [self._word_to_chars(w) for w in words]
+
+        # ---- add unique chars ----
         for token_list in tokens_list:
-            for token in token_list:
-                if token not in self.vocab:
-                    self.vocab[token] = len(self.vocab)
-        
+            for t in token_list:
+                if t not in self.vocab:
+                    self.vocab[t] = len(self.vocab)
+
+        # ---- BPE loop ----
         while len(self.vocab) < self.vocab_size:
-            #count frequency of adjacent paire
             pair_counts = self.get_pair_frequencies(tokens_list)
-            #if no pair found stop
             if not pair_counts:
                 break
 
-            #find the most frequent pair
             best_pair = max(pair_counts, key=pair_counts.get)
-            #merge this pair in all words
             tokens_list = self._merge_pair(tokens_list, best_pair)
-            #add merged token in vocabulary
+
             new_token = best_pair[0] + best_pair[1]
             if new_token not in self.vocab:
                 self.vocab[new_token] = len(self.vocab)
-            #save merge rule for encoding later
+
             self.merges.append(best_pair)
-        #build inverse vocal id. token for decending
-        self.inv_vocab = {idx: token for token, idx in self.vocab.items()}
+
+        # ---- inverse vocab ----
+        self.inv_vocab = {idx: tok for tok, idx in self.vocab.items()}
 
 
     def _word_to_chars(self, word):
@@ -88,30 +93,30 @@ class BPETokenizer:
         return list(word)
 
     def encode(self, text):
-        # string -> token ids
         text = text.lower().strip()
         words = text.split()
 
-        #convert word to list of characters
-        tokens_list = [self._word_to_chars(w)for w in words]
+        # convert each word into list of characters
+        tokens_list = [self._word_to_chars(w) for w in words]
 
-        #apply merge rule in order
+        # apply BPE merges
         for merge_pair in self.merges:
             tokens_list = self._merge_pair(tokens_list, merge_pair)
-        
-        #convert tokens into ids using vocab
+
+        # convert tokens into ids (safe lookup)
         token_ids = []
         for token_list in tokens_list:
             for token in token_list:
-                token_ids.append(self.vocab[token])
-        
+                token_ids.append(self.vocab.get(token, self.vocab["<unk>"]))
+
         return token_ids
 
+
     def decode(self, token_ids):
-        # token ids -> string
         tokens = [self.inv_vocab[i] for i in token_ids]
         text = ''.join(tokens)
         return text
+
 
     def get_pair_frequencies(self, tokens_list):
         # get frequencies of adjacent token pairs
@@ -251,34 +256,33 @@ class SelfAttention:
     def __init__(self, embed_dim):
         self.embed_dim = embed_dim
 
-        # Weight matrices: [embed_dim x embed_dim]
-        self.W_q = random_matrix((embed_dim, embed_dim))
-        self.W_k = random_matrix((embed_dim, embed_dim))
-        self.W_v = random_matrix((embed_dim, embed_dim))
-
-    def forward(self, X):
+    def forward(self, Q, K, V):
         """
-        X = list of token vectors, shape: [seq_len, embed_dim]
-        returns Q, K, V each of shape: [seq_len, embed_dim]
+        Q, K, V shapes: (batch, seq_len, embed_dim)
+        Return:
+            output: (batch, seq_len, embed_dim)
+            weights: (batch, seq_len, seq_len)
         """
-        Q = []
-        K = []
-        V = []
-        
-        for token_vec in X:
-            print("token_vec length =", len(token_vec))
-            print("W_q rows =", len(self.W_q))
-            print("W_q cols =", len(self.W_q[0]))
-            q = matmul(token_vec, self.W_q)
-            k = matmul(token_vec, self.W_k)
-            v = matmul(token_vec, self.W_v)
 
-            Q.append(q)
-            K.append(k)
-            V.append(v)
+        B, T, D = Q.shape
 
-        return self.compute_attention(Q, K, V)
-    
+        # 1. Compute attention scores = Q·K^T
+        # shape -> (B, T, T)
+        scores = np.matmul(Q, K.transpose(0, 2, 1))
+
+        # 2. Scale
+        scores = scores / np.sqrt(D)
+
+        # 3. Softmax across last dimension
+        exp_scores = np.exp(scores - np.max(scores, axis=-1, keepdims=True))
+        weights = exp_scores / np.sum(exp_scores, axis=-1, keepdims=True)
+
+        # 4. Weighted sum over V
+        # (B, T, T) @ (B, T, D) -> (B, T, D)
+        output = np.matmul(weights, V)
+
+        return output, weights
+
     def dot(self,a,b):
         sum = 0
         for i in range(len(a)):
@@ -456,8 +460,9 @@ class MultiHeadAttention:
 def zeros(n):
     return [0.0 for _ in range(n)]
 
-def relu(vec):
-    return [max(0, v) for v in vec]
+def relu(x):
+    return np.maximum(x, 0)
+
 
 def add_vectors(a, b):
     """Element-wise add two vectors (same length)."""
@@ -466,31 +471,18 @@ def add_vectors_list(A, B):
     return [add_vectors(A[i], B[i]) for i in range(len(A))]
 class FeedForward:
     def __init__(self, embed_dim, hidden_dim):
-        # correct shapes
-        self.W1 = random_matrix((embed_dim, hidden_dim))      # [embed_dim x hidden_dim]
-        self.b1 = zeros(hidden_dim)
-
-        self.W2 = random_matrix((hidden_dim, embed_dim))      # [hidden_dim x embed_dim]
-        self.b2 = zeros(embed_dim)
+        self.W1 = np.random.randn(embed_dim, hidden_dim) / np.sqrt(embed_dim)
+        self.b1 = np.zeros((hidden_dim,))
+        self.W2 = np.random.randn(hidden_dim, embed_dim) / np.sqrt(hidden_dim)
+        self.b2 = np.zeros((embed_dim,))
 
     def forward(self, X):
-        out = []
-        for token_vec in X:
-
-            # First linear layer: X @ W1 + b1
-            hidden = matmul(token_vec, self.W1)
-            hidden = [hidden[i] + self.b1[i] for i in range(len(hidden))]
-
-            # ReLU activation
-            hidden = relu(hidden)
-
-            # Second linear layer
-            output_vec = matmul(hidden, self.W2)
-            output_vec = [output_vec[i] + self.b2[i] for i in range(len(output_vec))]
-
-            out.append(output_vec)
-
+        # X shape: (B, T, D)
+        hidden = np.matmul(X, self.W1) + self.b1
+        hidden = np.maximum(hidden, 0)   # ReLU
+        out = np.matmul(hidden, self.W2) + self.b2
         return out
+
 
 class LayerNorm:
     def __init__(self, dim, eps=1e-5):
@@ -513,70 +505,112 @@ class LayerNorm:
 
         return out
 
-
 class TransformerBlock:
-    def __init__(self, embed_dim, num_heads, ff_hidden_dim):
-        self.ln1 = LayerNorm(embed_dim)
-        self.mha = MultiHeadAttention(embed_dim, num_heads)
-        self.ln2 = LayerNorm(embed_dim)
-        self.ff = FeedForward(embed_dim, ff_hidden_dim)
+    def __init__(self, embed_dim, hidden_dim):
+        self.embed_dim = embed_dim
+
+        # --- Q, K, V projection weights ---
+        limit = 1 / np.sqrt(embed_dim)
+        self.Wq = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
+        self.Wk = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
+        self.Wv = np.random.uniform(-limit, limit, (embed_dim, embed_dim))
+
+        self.bq = np.zeros((embed_dim,))
+        self.bk = np.zeros((embed_dim,))
+        self.bv = np.zeros((embed_dim,))
+
+        # reuse your attention layer
+        self.attn = SelfAttention(hidden_dim)
+
+        # feedforward layer
+        self.ff = FeedForward(embed_dim, hidden_dim)
 
     def forward(self, X):
-        # ---- 1. LayerNorm before attention (Pre-norm) ----
-        norm1 = self.ln1.forward(X)
+        # X shape: (batch, seq_len, embed_dim)
+        B, T, D = X.shape
 
-        # ---- 2. Multi-head attention ----
-        attention_out = self.mha.forward(norm1)
+        # Linear projections
+        Q = np.matmul(X, self.Wq) + self.bq
+        K = np.matmul(X, self.Wk) + self.bk
+        V = np.matmul(X, self.Wv) + self.bv
 
-        # ---- 3. Residual connection ----
-        X2 = add_vectors_list(X, attention_out)
+        # Self-attention
+        attn_out, weights = self.attn.forward(Q, K, V)
 
-        # ---- 4. LayerNorm before feed-forward ----
-        norm2 = self.ln2.forward(X2)
+        # Feedforward
+        ff_out = self.ff.forward(attn_out)
 
-        # ---- 5. Feed-forward network ----
-        ff_out = self.ff.forward(norm2)
-
-        # ---- 6. Final residual ----
-        out = add_vectors_list(X2, ff_out)
-
-        return out
-
-
+        return ff_out
 
 class TransformerModel:
-    def __init__(self, vocab_size, max_len, embed_dim, num_heads, num_layers, ffn_hidden_dim):
-        self.token_embed = TokenEmbedding(vocab_size, embed_dim)
-        self.pos_embed = PosEmbedding(max_len, embed_dim)
-        self.blocks = [ TransformerBlock(embed_dim, num_heads, ffn_hidden_dim)
-                        for _ in range(num_layers) ]
-        # LM head: embed_dim x vocab_size
-        self.W_out = random_matrix((embed_dim, vocab_size))
+    def __init__(self, vocab_size, embed_dim, max_len=128, num_blocks=2, hidden_dim=64):
+        self.vocab_size = vocab_size
         self.embed_dim = embed_dim
-        self.lm_head = Linear(embed_dim, vocab_size)
+        self.max_len = max_len
 
+        # --- Token Embeddings ---
+        limit = 1 / np.sqrt(embed_dim)
+        self.token_embedding = np.random.uniform(-limit, limit, (vocab_size, embed_dim))
 
+        # --- Positional Embeddings ---
+        self.pos_embedding = np.random.uniform(-limit, limit, (max_len, embed_dim))
 
-    def forward(self, token_ids):
-        # 1. embeddings
-        token_vectors = self.token_embed.forward(token_ids)   # [seq_len, embed_dim]
-        pos_vectors = self.pos_embed.forward(token_ids)       # [seq_len, embed_dim]
-        X = add_vectors_list(token_vectors, pos_vectors)
+        # --- Transformer Blocks ---
+        self.blocks = [
+            TransformerBlock(embed_dim, hidden_dim)
+            for _ in range(num_blocks)
+        ]
 
+        # --- Final LM Head (linear layer) ---
+        self.Wo = np.random.uniform(-limit, limit, (embed_dim, vocab_size))
+        self.bo = np.zeros((vocab_size,))
 
-        # 2. transformer stack
+    def forward(self, ids):
+        # ids shape: (seq_len,)
+        T = len(ids)
+
+        # Make embedding matrix X: (1, T, embed_dim)
+        X = np.zeros((1, T, self.embed_dim))
+
+        for i, tok in enumerate(ids):
+            X[0, i] = self.token_embedding[tok] + self.pos_embedding[i]
+
+        # Pass through transformer blocks
         for block in self.blocks:
-            X = block.forward(X)   # shape preserved [seq_len, embed_dim]
+            X = block.forward(X)
 
-        # 3. logits: per token vector, produce vocab logits
-        logits = []
-        for vec in X:
-            # matmul(vec, W_out) -> length vocab_size
-            scores = matmul(vec, self.W_out)
-            logits.append(scores)
+        # Final linear projection → logits
+        logits = np.matmul(X, self.Wo) + self.bo   # (1, T, vocab_size)
 
-        return logits   # [seq_len, vocab_size]
-    
+        return logits[0]  # remove batch dimension
+
+    def generate(self, idx, max_new_tokens, tokenizer):
+        """
+        idx: list of token ids (context)
+        max_new_tokens: how many tokens to generate
+        tokenizer: your BPE or simple tokenizer
+        """
+
+        for _ in range(max_new_tokens):
+            # forward pass: logits shape (T, vocab)
+            logits = self.forward(idx)
+
+            # take last position
+            last_logits = logits[-1]   # shape: (vocab,)
+
+            # convert to probabilities using softmax
+            exps = np.exp(last_logits - np.max(last_logits))
+            probs = exps / np.sum(exps)
+
+            # sample from distribution (probabilistic)
+            next_id = int(np.random.choice(len(probs), p=probs))
+
+
+            # append prediction
+            idx.append(next_id)
+
+        return idx
+
 class MiniTransformer:
     def __init__(self, vocab_size, max_len, embed_dim, num_heads, ff_hidden_dim, num_layers):
         self.token_embed = TokenEmbedding(vocab_size, embed_dim)
@@ -597,6 +631,27 @@ class MiniTransformer:
             X = block.forward(X)
 
         return X
+
+training_text = """
+hello world this is a tiny training dataset
+hello there how are you
+i am building a tiny transformer language model
+"""
+
+tokenizer = BPETokenizer(vocab_size=1000)
+tokenizer.train(training_text)
+
+# ACTUAL vocab size after training
+vocab_size = len(tokenizer.vocab)
+
+model = TransformerModel(vocab_size, embed_dim=64)
+
+prompt = "hello"
+ids = tokenizer.encode(prompt)
+
+generated = model.generate(ids, max_new_tokens=20, tokenizer=tokenizer)
+
+print(tokenizer.decode(generated))
 
 
 '''Test cases for all the clasees and functions'''
