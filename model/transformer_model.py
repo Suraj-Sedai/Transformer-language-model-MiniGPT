@@ -55,33 +55,49 @@ class TransformerModel:
         logits = np.matmul(X, self.Wo) + self.bo  # seq_len x vocab_size
         return logits
 
-    def generate(self, idx, max_new_tokens, tokenizer):
-        """
-        idx: list of token ids (context)
-        max_new_tokens: how many tokens to generate
-        tokenizer: your BPE or simple tokenizer
-        """
-
+    def generate(self, idx, max_new_tokens, tokenizer, temperature=1.0, top_k=None, top_p=None):
         for _ in range(max_new_tokens):
-            # forward pass: logits shape (T, vocab)
             logits = self.forward(idx)
+            last_logits = logits[-1]
 
-            # take last position
-            last_logits = logits[-1]   # shape: (vocab,)
-
-            # convert to probabilities using softmax
-            exps = np.exp(last_logits - np.max(last_logits))
+            # temperature
+            scaled_logits = last_logits / temperature
+            exps = np.exp(scaled_logits - np.max(scaled_logits))
             probs = exps / np.sum(exps)
 
-            # sample from distribution (probabilistic)
-            next_id = int(np.random.choice(len(probs), p=probs))
+            # top-k
+            if top_k is not None:
+                probs_idx = probs.argsort()[::-1][:top_k]
+                top_probs = probs[probs_idx]
+                top_probs /= top_probs.sum()
+                next_id = np.random.choice(probs_idx, p=top_probs)
+            # top-p
+            elif top_p is not None:
+                next_id = top_p_sample(probs, top_p)
+            else:
+                next_id = np.random.choice(len(probs), p=probs)
 
-
-            # append prediction
             idx.append(next_id)
 
         return idx
-    
+
+    def top_p_sample(probs, p=0.9):
+        sorted_idx = np.argsort(probs)[::-1]
+        sorted_probs = probs[sorted_idx]
+        cumulative_probs = np.cumsum(sorted_probs)
+
+        # keep tokens until cumulative probability < p
+        keep_idx = cumulative_probs <= p
+        # ensure at least one token
+        if not keep_idx.any():
+            keep_idx[0] = True
+
+        selected_idx = sorted_idx[keep_idx]
+        selected_probs = probs[selected_idx]
+        selected_probs /= selected_probs.sum()
+        return np.random.choice(selected_idx, p=selected_probs)
+
+        
 
 class MiniTransformer:
     def __init__(self, vocab_size, max_len, embed_dim, num_heads, ff_hidden_dim, num_layers):
