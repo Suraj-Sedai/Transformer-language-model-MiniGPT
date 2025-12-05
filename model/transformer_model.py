@@ -79,14 +79,16 @@ class TransformerModel(nn.Module):
 
             logits = self.forward(idx)  # (1, T, V)
             last_logits = logits[:, -1, :] / (temperature if temperature > 0 else 1.0)
-            probs = F.softmax(last_logits, dim=-1).squeeze(0)
+            probs = F.softmax(last_logits, dim=-1).view(-1)  # ensure 1D
 
             # top-k
             if top_k is not None:
+                top_k = min(top_k, probs.numel())  # safety check
                 topk = torch.topk(probs, top_k)
                 choices = topk.indices
                 p = topk.values / topk.values.sum()
                 next_id = choices[torch.multinomial(p, num_samples=1)].item()
+
             # top-p (nucleus)
             elif top_p is not None:
                 sorted_probs, sorted_idx = torch.sort(probs, descending=True)
