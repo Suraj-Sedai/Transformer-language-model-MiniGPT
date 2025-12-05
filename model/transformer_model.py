@@ -1,123 +1,108 @@
-from model.transformer_block import TransformerBlock
-from model.embeddings import TokenEmbedding, PositionalEncoding
-from utils import matmul, add_vectors, random_matrix, add_vectors_list
-import numpy as np
+# model/transformer_model.py
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from .embeddings import TokenEmbedding, PositionalEncoding
+from .transformer_block import TransformerBlock
 
-class TransformerModel:
-    def __init__(self, vocab_size, embed_dim, num_heads, num_layers, ffn_hidden_dim, max_len=128):
+
+class TransformerModel(nn.Module):
+    """
+    Minimal GPT-like model (causal LM)
+    - token embedding
+    - positional encoding (sinusoidal)
+    - stack of transformer blocks
+    - linear head to vocab
+    """
+    def __init__(self, vocab_size, max_len, embed_dim, num_heads, num_layers, ff_hidden_dim, dropout=0.1, tie_weights=True):
+        super().__init__()
+        self.embed_dim = embed_dim
         self.token_embed = TokenEmbedding(vocab_size, embed_dim)
         self.pos_embed = PositionalEncoding(max_len, embed_dim)
-        self.blocks = [TransformerBlock(embed_dim, num_heads, ffn_hidden_dim)
-                       for _ in range(num_layers)]
-        self.Wo = random_matrix((embed_dim, vocab_size))
-        self.bo = np.zeros(vocab_size)
-        self.embed_dim = embed_dim
-        self.vocab_size = vocab_size
+        self.blocks = nn.ModuleList([
+            TransformerBlock(embed_dim, num_heads, ff_hidden_dim, dropout=dropout)
+            for _ in range(num_layers)
+        ])
+        self.ln_f = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, vocab_size, bias=False)  # will tie optionally
+
+        if tie_weights:
+            # tie embedding and head weights (common in language models)
+            self.head.weight = self.token_embed.embed.weight
+
         self.max_len = max_len
-        
-    def forward_with_hidden(self, ids):
+
+    def forward(self, token_ids, attn_mask=None):
         """
-        Returns:
-            logits: [seq_len, vocab_size]
-            hidden: [seq_len, embed_dim]  # last hidden vectors before final linear
+        token_ids: (B, T) long tensor
+        attn_mask: (T, T) boolean mask for causal/other masking (optional)
+        returns logits: (B, T, vocab_size)
         """
-        # --- Build input embeddings ---
-        token_vectors = self.token_embed.forward(ids)  # list of [embed_dim]
-        pos_vectors = self.pos_embed.forward(ids)      # list of [embed_dim]
+        device = token_ids.device
+        B, T = token_ids.shape
 
-        # Add token + position embeddings
-        X = [ [t + p for t,p in zip(tv,pv)] for tv,pv in zip(token_vectors,pos_vectors) ]
+        # embeddings
+        tok = self.token_embed(token_ids)           # (B, T, D)
+        pos = self.pos_embed(token_ids.to(device))  # (B, T, D)
+        x = tok + pos
 
-        # --- Pass through transformer blocks ---
-        for block in self.blocks:
-            X = block.forward(X)
+        # transformer blocks
+        for blk in self.blocks:
+            x = blk(x, attn_mask=attn_mask)
 
-        hidden = [v.copy() for v in X]  # last hidden vectors
-
-        # Final linear layer
-        logits = []
-        for vec in X:
-            logits.append(matmul(vec, self.Wo) + self.bo)  # use self.Wo + self.bo
-
-        return logits, hidden
-
-    def forward(self, ids):
-        # ids: list of token IDs
-        tok_vecs = self.token_embed.forward(ids)
-        pos_vecs = self.pos_embed.forward(ids)
-        X = [add_vectors(tok_vecs[i], pos_vecs[i]) for i in range(len(ids))]  # seq_len x embed_dim
-
-        # pass through blocks
-        for block in self.blocks:
-            X = block.forward(X)  # output: seq_len x embed_dim
-
-        # final linear layer
-        logits = np.matmul(X, self.Wo) + self.bo  # seq_len x vocab_size
-
+        x = self.ln_f(x)  # final norm
+        logits = self.head(x)  # (B, T, V)
         return logits
 
-    def generate(self, idx, max_new_tokens, tokenizer, temperature=1.0, top_k=None, top_p=None):
-        for _ in range(max_new_tokens):
-            logits = self.forward(idx)
-            last_logits = logits[-1]
+    @torch.no_grad()
+    def generate(self, token_ids, max_new_tokens=20, temperature=1.0, top_k=None, top_p=None, device=None):
+        """
+        Simple autoregressive generation (batch size 1). Supports top-k, top-p and temperature.
+        token_ids: list or tensor of shape (T,) or (1, T)
+        returns list of token ids (including prompt).
+        """
+        if device is None:
+            device = next(self.parameters()).device
 
-            # temperature
-            scaled_logits = last_logits / temperature
-            exps = np.exp(scaled_logits - np.max(scaled_logits))
-            probs = exps / np.sum(exps)
+        if isinstance(token_ids, (list, tuple)):
+            idx = torch.tensor([token_ids], dtype=torch.long, device=device)
+        elif token_ids.ndim == 1:
+            idx = token_ids.unsqueeze(0).to(device)
+        else:
+            idx = token_ids.to(device)
+
+        for _ in range(max_new_tokens):
+            T = idx.shape[1]
+            if T > self.max_len:
+                # keep last max_len tokens
+                idx = idx[:, -self.max_len:]
+
+            logits = self.forward(idx)  # (1, T, V)
+            last_logits = logits[:, -1, :] / (temperature if temperature > 0 else 1.0)
+            probs = F.softmax(last_logits, dim=-1).squeeze(0)
 
             # top-k
             if top_k is not None:
-                probs_idx = probs.argsort()[::-1][:top_k]
-                top_probs = probs[probs_idx]
-                top_probs /= top_probs.sum()
-                next_id = np.random.choice(probs_idx, p=top_probs)
-            # top-p
+                topk = torch.topk(probs, top_k)
+                choices = topk.indices
+                p = topk.values / topk.values.sum()
+                next_id = choices[torch.multinomial(p, num_samples=1)].item()
+            # top-p (nucleus)
             elif top_p is not None:
-                next_id = self.top_p_sample(probs, top_p)
+                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+                cumulative = torch.cumsum(sorted_probs, dim=0)
+                cutoff = (cumulative > top_p).nonzero(as_tuple=False)
+                if cutoff.numel() > 0:
+                    cutoff_idx = cutoff[0].item()
+                    keep = sorted_idx[: cutoff_idx + 1]
+                else:
+                    keep = sorted_idx
+                subp = probs[keep]
+                subp = subp / subp.sum()
+                next_id = keep[torch.multinomial(subp, 1)].item()
             else:
-                next_id = np.random.choice(len(probs), p=probs)
+                next_id = torch.multinomial(probs, num_samples=1).item()
 
-            idx.append(next_id)
+            idx = torch.cat([idx, torch.tensor([[next_id]], device=device)], dim=1)
 
-        return idx
-
-    @staticmethod
-    def top_p_sample(probs, p=0.9):
-        sorted_idx = np.argsort(probs)[::-1]
-        sorted_probs = probs[sorted_idx]
-        cumulative_probs = np.cumsum(sorted_probs)
-
-        # keep tokens until cumulative probability < p
-        keep_idx = cumulative_probs <= p
-        # ensure at least one token
-        if not keep_idx.any():
-            keep_idx[0] = True
-
-        selected_idx = sorted_idx[keep_idx]
-        selected_probs = probs[selected_idx]
-        selected_probs /= selected_probs.sum()
-        return np.random.choice(selected_idx, p=selected_probs)
-
-        
-
-class MiniTransformer:
-    def __init__(self, vocab_size, max_len, embed_dim, num_heads, ff_hidden_dim, num_layers):
-        self.token_embed = TokenEmbedding(vocab_size, embed_dim)
-        self.pos_embed = PositionalEncoding(max_len, embed_dim)
-        
-        self.blocks = [
-            TransformerBlock(embed_dim, num_heads, ff_hidden_dim)
-            for _ in range(num_layers)
-        ]
-
-    def forward(self, token_ids):
-        tok = self.token_embed.forward(token_ids)
-        pos = self.pos_embed.forward(token_ids)
-        
-        X = add_vectors_list(tok, pos)
-
-        for block in self.blocks:
-            X = block.forward(X)
-
-        return X
+        return idx.squeeze(0).tolist()
