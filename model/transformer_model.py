@@ -1,12 +1,12 @@
 from model.transformer_block import TransformerBlock
-from model.embeddings import TokenEmbedding, PosEmbedding
+from model.embeddings import TokenEmbedding, PositionalEncoding
 from utils import matmul, add_vectors, random_matrix, add_vectors_list
 import numpy as np
 
 class TransformerModel:
     def __init__(self, vocab_size, embed_dim, num_heads, num_layers, ffn_hidden_dim, max_len=128):
         self.token_embed = TokenEmbedding(vocab_size, embed_dim)
-        self.pos_embed = PosEmbedding(max_len, embed_dim)
+        self.pos_embed = PositionalEncoding(max_len, embed_dim)
         self.blocks = [TransformerBlock(embed_dim, num_heads, ffn_hidden_dim)
                        for _ in range(num_layers)]
         self.Wo = random_matrix((embed_dim, vocab_size))
@@ -53,6 +53,7 @@ class TransformerModel:
 
         # final linear layer
         logits = np.matmul(X, self.Wo) + self.bo  # seq_len x vocab_size
+
         return logits
 
     def generate(self, idx, max_new_tokens, tokenizer, temperature=1.0, top_k=None, top_p=None):
@@ -73,7 +74,7 @@ class TransformerModel:
                 next_id = np.random.choice(probs_idx, p=top_probs)
             # top-p
             elif top_p is not None:
-                next_id = top_p_sample(probs, top_p)
+                next_id = self.top_p_sample(probs, top_p)
             else:
                 next_id = np.random.choice(len(probs), p=probs)
 
@@ -81,6 +82,7 @@ class TransformerModel:
 
         return idx
 
+    @staticmethod
     def top_p_sample(probs, p=0.9):
         sorted_idx = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_idx]
@@ -102,7 +104,7 @@ class TransformerModel:
 class MiniTransformer:
     def __init__(self, vocab_size, max_len, embed_dim, num_heads, ff_hidden_dim, num_layers):
         self.token_embed = TokenEmbedding(vocab_size, embed_dim)
-        self.pos_embed = PosEmbedding(max_len, embed_dim)
+        self.pos_embed = PositionalEncoding(max_len, embed_dim)
         
         self.blocks = [
             TransformerBlock(embed_dim, num_heads, ff_hidden_dim)
