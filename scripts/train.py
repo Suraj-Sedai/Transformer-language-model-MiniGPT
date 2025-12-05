@@ -14,15 +14,15 @@ import numpy as np
 # -----------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-vocab_size = 200        # after tokenizer.train -> tokenizer.vocab_size (or use this as arg)
+vocab_size = 1000        # after tokenizer.train -> tokenizer.vocab_size (or use this as arg)
 max_len = 64
 embed_dim = 128
 num_heads = 4
 num_layers = 2
 ff_hidden_dim = 512
 batch_size = 8
-seq_len = 16            # context window for training (should be <= max_len)
-epochs = 200
+seq_len = 32            # context window for training (should be <= max_len)
+epochs = 50
 lr = 3e-4
 weight_decay = 1e-2
 grad_clip = 1.0
@@ -31,10 +31,20 @@ print_every = 10
 # -----------------------
 # Prepare data & tokenizer
 # -----------------------
-text = open("data/corpus.txt", "r", encoding="utf-8").read() if os.path.exists("data/corpus.txt") else "hello world " * 2000
-tokenizer = BPETokenizer(vocab_size=200)
+text = ("Artificial Intelligence (AI) is transforming technology. "
+        "Machine Learning (ML) is a key part of AI. "
+        "Neural networks are a type of ML model. "
+        "AI can perform tasks like language understanding, image recognition, "
+        "and data analysis. "
+        "Generative AI can create text, images, and music automatically. "
+        "Reinforcement Learning trains agents to take actions to maximize rewards. "
+        "Deep learning models learn hierarchical representations of data. "
+        "Natural Language Processing (NLP) enables machines to understand human language. ") * 200
+
+tokenizer = BPETokenizer(vocab_size=vocab_size)
 tokenizer.train(text)
-vocab_size = len(tokenizer.vocab)
+vocab_size = len(tokenizer.vocab)  # update actual vocab
+
 
 ids = tokenizer.encode(text)  # list of ints
 
