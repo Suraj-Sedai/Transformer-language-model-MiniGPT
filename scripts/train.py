@@ -1,85 +1,102 @@
-import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import numpy as np
-from tokenizer import BPETokenizer
+# scripts/train.py
+import os
+import math
+import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from model.transformer_model import TransformerModel
-from utils import softmax, cross_entropy
+from tokenizer import BPETokenizer  # your existing tokenizer file
+import numpy as np
 
-# --- Better training corpus ---
-text = """
-Artificial Intelligence (AI) allows machines to perform tasks that typically require human intelligence. 
-Machine Learning (ML) enables computers to learn patterns from data. 
-Deep Learning (DL) uses neural networks to analyze large datasets and improve performance over time. 
-AI applications include language understanding, image recognition, and decision making. 
-Reinforcement Learning trains agents to take actions to maximize rewards. 
-Natural Language Processing allows machines to understand and generate human language. 
-Computer Vision enables image and video analysis. 
-Generative AI can create text, images, and music automatically.
-"""
+# -----------------------
+# Config / Hyperparams
+# -----------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Initialize tokenizer ---
-tokenizer = BPETokenizer(vocab_size=500)
+vocab_size = 200        # after tokenizer.train -> tokenizer.vocab_size (or use this as arg)
+max_len = 64
+embed_dim = 128
+num_heads = 4
+num_layers = 2
+ff_hidden_dim = 512
+batch_size = 8
+seq_len = 16            # context window for training (should be <= max_len)
+epochs = 200
+lr = 3e-4
+weight_decay = 1e-2
+grad_clip = 1.0
+print_every = 10
+
+# -----------------------
+# Prepare data & tokenizer
+# -----------------------
+text = open("data/corpus.txt", "r", encoding="utf-8").read() if os.path.exists("data/corpus.txt") else "hello world " * 2000
+tokenizer = BPETokenizer(vocab_size=200)
 tokenizer.train(text)
-ids = tokenizer.encode(text)
+vocab_size = len(tokenizer.vocab)
 
-# --- Hyperparameters ---
-seq_len = 6       # context length
-lr = 0.01
-epochs = 100
-top_k = 5         # for sampling diversity
+ids = tokenizer.encode(text)  # list of ints
 
-# --- Initialize model ---
-model = TransformerModel(
-    vocab_size=tokenizer.vocab_size,
-    embed_dim=128,
-    num_heads=2,
-    num_layers=4,
-    ffn_hidden_dim=256
-)
+# create dataset of sliding windows
+X = []
+Y = []
+for i in range(len(ids) - seq_len):
+    X.append(ids[i:i+seq_len])
+    Y.append(ids[i+seq_len])
+X = np.array(X, dtype=np.int64)
+Y = np.array(Y, dtype=np.int64)
 
-# --- Training loop ---
+# simple batching helper
+def get_batch(batch_idx):
+    start = batch_idx * batch_size
+    end = start + batch_size
+    x = torch.tensor(X[start:end], dtype=torch.long).to(device)
+    y = torch.tensor(Y[start:end], dtype=torch.long).to(device)
+    return x, y
+
+num_batches = len(X) // batch_size
+
+# -----------------------
+# Model, loss, optimizer
+# -----------------------
+model = TransformerModel(vocab_size=vocab_size, max_len=max_len, embed_dim=embed_dim,
+                         num_heads=num_heads, num_layers=num_layers, ff_hidden_dim=ff_hidden_dim).to(device)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+# -----------------------
+# Training loop (simple)
+# -----------------------
 for epoch in range(epochs):
-    total_loss = 0
+    model.train()
+    total_loss = 0.0
+    perm = np.random.permutation(len(X) // batch_size)
+    for bidx in range(num_batches):
+        i = bidx  # you can randomize
+        xb, yb = get_batch(i)
+        optimizer.zero_grad()
+        logits = model(xb)  # (B, T, V)
+        # we only predict the last token, consistent with earlier scripts:
+        last_logits = logits[:, -1, :]  # (B, V)
+        loss = criterion(last_logits, yb)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+        total_loss += loss.item()
 
-    for i in range(len(ids) - seq_len):
-        x_ids = ids[i:i+seq_len]
-        y_id = ids[i+seq_len]
+    if epoch % print_every == 0:
+        avg_loss = total_loss / num_batches
+        ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
+        print(f"Epoch {epoch} | avg loss {avg_loss:.4f} | ppl {ppl:.2f}")
 
-        # Forward pass
-        logits, hidden = model.forward_with_hidden(x_ids)
-        last_logits = logits[-1]
-        probs = softmax(last_logits)
-
-        # Loss
-        loss = cross_entropy(probs, y_id)
-        total_loss += loss
-
-        # Gradients w.r.t logits
-        grad = probs.copy()
-        grad[y_id] -= 1
-
-        # Update output layer
-        model.Wo -= lr * np.outer(hidden[-1], grad)
-        model.bo -= lr * grad
-
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}, loss: {total_loss/len(ids):.4f}")
-
-# --- Text generation ---
-def sample_next_token(logits, top_k=5):
-    # Top-k sampling
-    idxs = np.argsort(logits)[-top_k:]
-    probs = softmax(logits[idxs])
-    return np.random.choice(idxs, p=probs)
-
-prompt = "Artificial Intelligence enables"
-ids = tokenizer.encode(prompt)
-generated_ids = ids.copy()
-
-for _ in range(30):
-    logits, hidden = model.forward_with_hidden(generated_ids[-seq_len:])
-    next_id = sample_next_token(logits[-1], top_k=top_k)
-    generated_ids.append(next_id)
-
-print("Generated text:")
-print(tokenizer.decode(generated_ids))
+# -----------------------
+# Generate
+# -----------------------
+model.eval()
+prompt = "Once upon a time in a small village,"
+ids_prompt = tokenizer.encode(prompt)
+output_ids = model.generate(ids_prompt, max_new_tokens=40, temperature=0.9, top_k=30, device=device)
+print("PROMPT:", prompt)
+print("GENERATED:", tokenizer.decode(output_ids))
