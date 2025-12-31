@@ -1,112 +1,151 @@
-# scripts/train.py
 import os
-import math
-import random
 import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+
 from model.transformer_model import TransformerModel
-from tokenizer import BPETokenizer  # your existing tokenizer file
-import numpy as np
+from tokenizer import BPETokenizer
+
 
 # -----------------------
-# Config / Hyperparams
+# Hyperparameters
 # -----------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-vocab_size = 1000        # after tokenizer.train -> tokenizer.vocab_size (or use this as arg)
+vocab_size = 5000
 max_len = 64
 embed_dim = 128
 num_heads = 4
 num_layers = 2
 ff_hidden_dim = 512
-batch_size = 8
-seq_len = 32            # context window for training (should be <= max_len)
-epochs = 50
+batch_size = 16          # better for GPU
+seq_len = 64             # full window
+epochs = 70
+
 lr = 3e-4
 weight_decay = 1e-2
 grad_clip = 1.0
-print_every = 10
+print_every = 1
+
 
 # -----------------------
-# Prepare data & tokenizer
+# Dataset
 # -----------------------
-text = ("Artificial Intelligence (AI) is transforming technology. "
-        "Machine Learning (ML) is a key part of AI. "
-        "Neural networks are a type of ML model. "
-        "AI can perform tasks like language understanding, image recognition, "
-        "and data analysis. "
-        "Generative AI can create text, images, and music automatically. "
-        "Reinforcement Learning trains agents to take actions to maximize rewards. "
-        "Deep learning models learn hierarchical representations of data. "
-        "Natural Language Processing (NLP) enables machines to understand human language. ") * 200
+class TextDataset(Dataset):
+    def __init__(self, ids, seq_len):
+        self.ids = ids
+        self.seq_len = seq_len
 
+    def __len__(self):
+        return len(self.ids) - self.seq_len
+
+    def __getitem__(self, idx):
+        x = torch.tensor(self.ids[idx : idx + self.seq_len], dtype=torch.long)
+        y = torch.tensor(self.ids[idx + 1 : idx + self.seq_len + 1], dtype=torch.long)
+        return x, y
+
+
+# -----------------------
+# Load / Build Corpus
+# -----------------------
+corpus_path = "data/corpus.txt"
+
+if os.path.exists(corpus_path):
+    text = open(corpus_path, "r", encoding="utf-8").read()
+else:
+    print("⚠️  No corpus found — using default repeated AI text.")
+    base_text = (
+        "Artificial intelligence is transforming technology. "
+        "Machine learning is a key part of AI. "
+        "Neural networks learn patterns from data. "
+        "AI models generate text and understand language. "
+    )
+    text = base_text * 300  # repeated to build a large learning set
+
+
+# -----------------------
+# Tokenizer
+# -----------------------
 tokenizer = BPETokenizer(vocab_size=vocab_size)
 tokenizer.train(text)
-vocab_size = len(tokenizer.vocab)  # update actual vocab
 
+vocab_size = len(tokenizer.vocab)
+print("📌 Final vocab size:", vocab_size)
 
-ids = tokenizer.encode(text)  # list of ints
+ids = tokenizer.encode(text)
+dataset = TextDataset(ids, seq_len)
+loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-# create dataset of sliding windows
-X = []
-Y = []
-for i in range(len(ids) - seq_len):
-    X.append(ids[i:i+seq_len])
-    Y.append(ids[i+seq_len])
-X = np.array(X, dtype=np.int64)
-Y = np.array(Y, dtype=np.int64)
-
-# simple batching helper
-def get_batch(batch_idx):
-    start = batch_idx * batch_size
-    end = start + batch_size
-    x = torch.tensor(X[start:end], dtype=torch.long).to(device)
-    y = torch.tensor(Y[start:end], dtype=torch.long).to(device)
-    return x, y
-
-num_batches = len(X) // batch_size
 
 # -----------------------
-# Model, loss, optimizer
+# Model + Optimizer
 # -----------------------
-model = TransformerModel(vocab_size=vocab_size, max_len=max_len, embed_dim=embed_dim,
-                         num_heads=num_heads, num_layers=num_layers, ff_hidden_dim=ff_hidden_dim).to(device)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("🚀 Training on:", device)
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+model = TransformerModel(
+    vocab_size=vocab_size,
+    embed_dim=embed_dim,
+    num_heads=num_heads,
+    num_layers=num_layers,
+    ff_hidden_dim=ff_hidden_dim,
+    max_len=max_len
+).to(device)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
 
 # -----------------------
-# Training loop (simple)
+# Training Loop
 # -----------------------
 for epoch in range(epochs):
     model.train()
-    total_loss = 0.0
-    perm = np.random.permutation(len(X) // batch_size)
-    for bidx in range(num_batches):
-        i = bidx  # you can randomize
-        xb, yb = get_batch(i)
+    total_loss = 0
+
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+
         optimizer.zero_grad()
-        logits = model(xb)  # (B, T, V)
-        # we only predict the last token, consistent with earlier scripts:
-        last_logits = logits[:, -1, :]  # (B, V)
-        loss = criterion(last_logits, yb)
+
+        logits = model(x)                     # (batch, seq_len, vocab)
+        loss = F.cross_entropy(
+            logits.reshape(-1, vocab_size),
+            y.reshape(-1)
+        )
+
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
+
         total_loss += loss.item()
 
     if epoch % print_every == 0:
-        avg_loss = total_loss / num_batches
-        ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
-        print(f"Epoch {epoch} | avg loss {avg_loss:.4f} | ppl {ppl:.2f}")
+        avg_loss = total_loss / len(loader)
+        ppl = torch.exp(torch.tensor(avg_loss)).item()
+        print(f"Epoch {epoch:03d} | loss {avg_loss:.4f} | ppl {ppl:.2f}")
+
 
 # -----------------------
-# Generate
+# Generation Test
 # -----------------------
 model.eval()
+
 prompt = "Once upon a time in a small village,"
 ids_prompt = tokenizer.encode(prompt)
-output_ids = model.generate(ids_prompt, max_new_tokens=40, temperature=0.9, top_k=30, device=device)
-print("PROMPT:", prompt)
-print("GENERATED:", tokenizer.decode(output_ids))
+
+print("\nPROMPT:", prompt)
+
+generated_ids = model.generate(
+    ids_prompt,
+    max_new_tokens=80,
+    temperature=0.9,
+    top_k=30,
+    device=device
+)
+
+generated_text = tokenizer.decode(generated_ids)
+print("GENERATED:", generated_text)
+
+num_params = sum(p.numel() for p in model.parameters())
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Params: {num_params:,} (trainable: {trainable:,}) ≈ {num_params/1e6:.2f}M")
+
