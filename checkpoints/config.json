@@ -1,0 +1,15 @@
+{
+  "vocab_size": 2000,
+  "max_len": 256,
+  "embed_dim": 512,
+  "num_heads": 8,
+  "num_layers": 6,
+  "ff_hidden_dim": 2048,
+  "batch_size": 16,
+  "seq_len": 128,
+  "epochs": 5,
+  "lr": 0.0003,
+  "weight_decay": 0.01,
+  "grad_clip": 1.0,
+  "grad_accum_steps": 4
+}
