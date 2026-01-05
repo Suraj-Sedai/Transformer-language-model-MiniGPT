@@ -40,10 +40,24 @@ MODEL_PATH = os.path.join(CHECKPOINT_DIR, "model.pt")
 TOKENIZER_PATH = os.path.join(CHECKPOINT_DIR, "tokenizer.json")
 CONFIG_PATH = os.path.join(CHECKPOINT_DIR, "config.json")
 
-HEARTBEAT_SECONDS = 60
-NUM_WORKERS = 0  # Windows safe
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+NUM_WORKERS = 0
+HEARTBEAT_SECONDS = 60
+
+
+# =====================================================
+# TEXT CLEANING (IMPORTANT)
+# =====================================================
+def clean_text(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("=") and line.endswith("="):
+            continue
+        lines.append(line.lower())
+    return " ".join(lines)
 
 
 # =====================================================
@@ -60,10 +74,7 @@ class LanguageModelDataset(Dataset):
     def __getitem__(self, idx):
         x = self.tokens[idx : idx + self.seq_len]
         y = self.tokens[idx + 1 : idx + self.seq_len + 1]
-        return (
-            torch.tensor(x, dtype=torch.long),
-            torch.tensor(y, dtype=torch.long),
-        )
+        return torch.tensor(x), torch.tensor(y)
 
 
 # =====================================================
@@ -91,21 +102,22 @@ class TransformerLM(nn.Module):
         self.ln = nn.LayerNorm(CONFIG["embed_dim"])
         self.head = nn.Linear(CONFIG["embed_dim"], vocab_size, bias=False)
 
-        # Weight tying (GPT-style)
         self.head.weight = self.token_emb.weight
+
+        # cache causal mask
+        self.register_buffer(
+            "causal_mask",
+            torch.triu(torch.ones(CONFIG["max_len"], CONFIG["max_len"]), diagonal=1).bool(),
+        )
 
     def forward(self, x):
         B, T = x.size()
         pos = torch.arange(T, device=x.device).unsqueeze(0)
 
         x = self.token_emb(x) + self.pos_emb(pos)
+        mask = self.causal_mask[:T, :T]
 
-        # Causal mask (no looking ahead)
-        causal_mask = torch.triu(
-            torch.ones(T, T, device=x.device), diagonal=1
-        ).bool()
-
-        x = self.transformer(x, mask=causal_mask)
+        x = self.transformer(x, mask=mask)
         x = self.ln(x)
         return self.head(x)
 
@@ -113,14 +125,14 @@ class TransformerLM(nn.Module):
 # =====================================================
 # HEARTBEAT
 # =====================================================
-def heartbeat(stop_event, message):
+def heartbeat(stop_event, msg):
     while not stop_event.is_set():
-        print(f"[{time.strftime('%H:%M:%S')}] {message}")
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}")
         stop_event.wait(HEARTBEAT_SECONDS)
 
 
 # =====================================================
-# CHECKPOINTING
+# SAVE / LOAD
 # =====================================================
 def save_checkpoint(model, optimizer, scheduler, tokenizer, epoch):
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -128,33 +140,25 @@ def save_checkpoint(model, optimizer, scheduler, tokenizer, epoch):
     torch.save(
         {
             "epoch": epoch,
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict(),
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
         },
         MODEL_PATH,
     )
 
-    tokenizer_data = {
-        "vocab": tokenizer.vocab,
-        "merges": tokenizer.merges,
-    }
-
     with open(TOKENIZER_PATH, "w", encoding="utf-8") as f:
-        json.dump(tokenizer_data, f, ensure_ascii=False, indent=2)
+        json.dump(
+            {"vocab": tokenizer.vocab, "merges": tokenizer.merges},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     with open(CONFIG_PATH, "w") as f:
         json.dump(CONFIG, f, indent=2)
 
-    print("\nModel, tokenizer, and config saved.\n")
-
-
-def checkpoint_exists():
-    return (
-        os.path.exists(MODEL_PATH)
-        and os.path.exists(TOKENIZER_PATH)
-        and os.path.exists(CONFIG_PATH)
-    )
+    print("Checkpoint saved.")
 
 
 # =====================================================
@@ -163,72 +167,37 @@ def checkpoint_exists():
 def main():
     print("Using device:", DEVICE)
 
-    # -------------------------------------------------
-    # SKIP TRAINING IF MODEL EXISTS
-    # -------------------------------------------------
-    if checkpoint_exists():
-        print("Trained model already exists.")
-        print("Training skipped.")
-        print("You can now run inference safely.")
-        return
-
-    # -------------------------------------------------
-    # LOAD DATA
-    # -------------------------------------------------
     print("Loading WikiText-2...")
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
-    train_text = "\n".join(dataset["train"]["text"])
-    print("Training text length:", len(train_text))
+    train_text = clean_text("\n".join(dataset["train"]["text"]))
 
-    # -------------------------------------------------
-    # TOKENIZER
-    # -------------------------------------------------
     tokenizer = BPETokenizer(vocab_size=CONFIG["vocab_size"])
 
-    print("Training tokenizer (can take 10–20 minutes)...")
-    stop_event = threading.Event()
-    hb = threading.Thread(
+    print("Training tokenizer...")
+    stop = threading.Event()
+    threading.Thread(
         target=heartbeat,
-        args=(stop_event, "Tokenizer still running..."),
+        args=(stop, "Tokenizer running..."),
         daemon=True,
-    )
-    hb.start()
+    ).start()
 
     tokenizer.train(train_text)
+    stop.set()
 
-    stop_event.set()
-    hb.join()
-
-    vocab_size = len(tokenizer.vocab)
-    print("Actual vocab size:", vocab_size)
-
-    # -------------------------------------------------
-    # DATASET
-    # -------------------------------------------------
     tokens = tokenizer.encode(train_text)
-    train_dataset = LanguageModelDataset(tokens, CONFIG["seq_len"])
+    vocab_size = len(tokenizer.vocab)
 
-    dataloader = DataLoader(
-        train_dataset,
+    dataset = LanguageModelDataset(tokens, CONFIG["seq_len"])
+    loader = DataLoader(
+        dataset,
         batch_size=CONFIG["batch_size"],
         shuffle=True,
         num_workers=NUM_WORKERS,
-        pin_memory=True,
+        pin_memory=(DEVICE == "cuda"),
         drop_last=True,
     )
 
-    print("Batches per epoch:", len(dataloader))
-
-    # -------------------------------------------------
-    # MODEL
-    # -------------------------------------------------
     model = TransformerLM(vocab_size).to(DEVICE)
-
-    print(
-        "Model parameters:",
-        sum(p.numel() for p in model.parameters()) // 1_000_000,
-        "M",
-    )
 
     optimizer = AdamW(
         model.parameters(),
@@ -236,37 +205,25 @@ def main():
         weight_decay=CONFIG["weight_decay"],
     )
 
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=len(dataloader) * CONFIG["epochs"],
-    )
+    total_steps = (len(loader) // CONFIG["grad_accum_steps"]) * CONFIG["epochs"]
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
 
     criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler("cuda")
+    scaler = GradScaler(enabled=(DEVICE == "cuda"))
 
-    # -------------------------------------------------
-    # TRAINING LOOP
-    # -------------------------------------------------
     print("Starting training...\n")
 
-    global_step = 0
+    step_count = 0
 
     for epoch in range(CONFIG["epochs"]):
         model.train()
         total_loss = 0.0
-        last_print = time.time()
-
         optimizer.zero_grad(set_to_none=True)
 
-        for step, (x, y) in enumerate(dataloader):
-            if time.time() - last_print >= HEARTBEAT_SECONDS:
-                print(f"[{time.strftime('%H:%M:%S')}] Training still running...")
-                last_print = time.time()
+        for step, (x, y) in enumerate(loader):
+            x, y = x.to(DEVICE), y.to(DEVICE)
 
-            x = x.to(DEVICE, non_blocking=True)
-            y = y.to(DEVICE, non_blocking=True)
-
-            with autocast("cuda"):
+            with autocast(enabled=(DEVICE == "cuda")):
                 logits = model(x)
                 loss = criterion(
                     logits.view(-1, vocab_size),
@@ -278,44 +235,26 @@ def main():
 
             if (step + 1) % CONFIG["grad_accum_steps"] == 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    CONFIG["grad_clip"],
-                )
+                torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG["grad_clip"])
                 scaler.step(optimizer)
                 scaler.update()
-                scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                step_count += 1
 
-            total_loss += loss.item()
-            global_step += 1
+            total_loss += loss.item() * CONFIG["grad_accum_steps"]
 
-            if step % 500 == 0:
-                print(
-                    f"Epoch {epoch+1}/{CONFIG['epochs']} | "
-                    f"Step {step}/{len(dataloader)} | "
-                    f"Loss {(loss.item() * CONFIG['grad_accum_steps']):.4f}"
-                )
-
-        avg_loss = total_loss / len(dataloader)
-        ppl = math.exp(avg_loss)
+        avg_loss = total_loss / len(loader)
         print(
-            f"\nEpoch {epoch+1} finished | "
-            f"Avg Loss {avg_loss:.4f} | PPL {ppl:.2f}\n"
+            f"Epoch {epoch+1}/{CONFIG['epochs']} | "
+            f"Loss {avg_loss:.4f} | PPL {math.exp(avg_loss):.2f}"
         )
 
-    # -------------------------------------------------
-    # SAVE
-    # -------------------------------------------------
     save_checkpoint(model, optimizer, scheduler, tokenizer, CONFIG["epochs"])
     print("Training complete.")
 
 
-# =====================================================
-# WINDOWS SAFE ENTRY
-# =====================================================
 if __name__ == "__main__":
     import torch.multiprocessing as mp
-
     mp.freeze_support()
     main()
