@@ -1,112 +1,129 @@
 from math import sqrt
-class BPETokenizer:
-    def __init__(self, vocab_size=50):
-        self.vocab_size = vocab_size
-        self.vocab = {}      # token -> id
-        self.inv_vocab = {}  # id -> token
-        self.merges = []     # list of merge rules
+# tokenizer.py
+from collections import Counter, defaultdict
+import re
 
-    def train(self, text):
+class BPETokenizer:
+    def __init__(self, vocab_size=30000):
+        self.vocab_size = vocab_size
+        self.vocab = {}       # token -> id
+        self.inv_vocab = {}   # id -> token
+        self.merges = []      # list of merged pairs (a,b)
+
+    def _basic_tokenize_words(self, text: str):
+        # simple word split; keep it similar to your current behavior
+        # (you can upgrade to regex later)
+        return text.lower().split()
+
+    def train(self, text: str):
         text = text.lower()
 
         # ---- special tokens ----
-        for special in ["<unk>", "<pad>", " "]:
+        for special in ["<unk>", "<pad>"]:
             if special not in self.vocab:
                 self.vocab[special] = len(self.vocab)
 
-        # ---- split into words ----
-        words = text.strip().split()
-        tokens_list = [self._word_to_chars(w) for w in words]
+        words = self._basic_tokenize_words(text)
 
-        # ---- add unique chars ----
-        for token_list in tokens_list:
-            for t in token_list:
-                if t not in self.vocab:
-                    self.vocab[t] = len(self.vocab)
+        # Count unique word frequencies (THIS is the big speedup)
+        word_freq = Counter(words)
+
+        # Represent each word as tuple of characters + end marker
+        # End marker helps merges not cross word boundary and improves decoding
+        def word_to_symbols(w):
+            return tuple(list(w) + ["</w>"])
+
+        word_symbols = {w: word_to_symbols(w) for w in word_freq.keys()}
+
+        # Initialize vocab with chars (and </w>)
+        for w, sym in word_symbols.items():
+            for s in sym:
+                if s not in self.vocab:
+                    self.vocab[s] = len(self.vocab)
 
         # ---- BPE loop ----
         while len(self.vocab) < self.vocab_size:
-            pair_counts = self.get_pair_frequencies(tokens_list)
+            pair_counts = self._get_pair_frequencies(word_symbols, word_freq)
             if not pair_counts:
                 break
 
             best_pair = max(pair_counts, key=pair_counts.get)
-            tokens_list = self._merge_pair(tokens_list, best_pair)
+            a, b = best_pair
+            new_token = a + b
 
-            new_token = best_pair[0] + best_pair[1]
+            # apply merge to all unique words (not all occurrences)
+            word_symbols = self._merge_pair_in_vocab(word_symbols, best_pair)
+
             if new_token not in self.vocab:
                 self.vocab[new_token] = len(self.vocab)
-
             self.merges.append(best_pair)
 
-        # ---- inverse vocab ----
-        self.inv_vocab = {idx: tok for tok, idx in self.vocab.items()}
+        self.inv_vocab = {i: t for t, i in self.vocab.items()}
 
+    def _get_pair_frequencies(self, word_symbols, word_freq):
+        pair_counts = defaultdict(int)
+        for w, symbols in word_symbols.items():
+            freq = word_freq[w]
+            # count adjacent pairs in this word, weighted by frequency
+            for i in range(len(symbols) - 1):
+                pair_counts[(symbols[i], symbols[i+1])] += freq
+        return pair_counts
 
-    def _word_to_chars(self, word):
-        # turn a word into a list of char
-        return list(word)
+    def _merge_pair_in_vocab(self, word_symbols, pair_to_merge):
+        a, b = pair_to_merge
+        merged = a + b
+        new_word_symbols = {}
 
-    def encode(self, text):
-        text = text.lower().strip()
-        words = text.split()
+        # merge via single pass through symbols
+        for w, symbols in word_symbols.items():
+            out = []
+            i = 0
+            while i < len(symbols):
+                if i < len(symbols) - 1 and symbols[i] == a and symbols[i+1] == b:
+                    out.append(merged)
+                    i += 2
+                else:
+                    out.append(symbols[i])
+                    i += 1
+            new_word_symbols[w] = tuple(out)
+        return new_word_symbols
 
-        # convert each word into list of characters
-        tokens_list = [self._word_to_chars(w) for w in words]
+    def encode(self, text: str):
+        text = text.lower()
+        words = self._basic_tokenize_words(text)
+        ids = []
 
-        # apply BPE merges
-        for merge_pair in self.merges:
-            tokens_list = self._merge_pair(tokens_list, merge_pair)
+        for w in words:
+            symbols = tuple(list(w) + ["</w>"])
+            # apply merges in order
+            for (a, b) in self.merges:
+                symbols = self._merge_pair_symbols(symbols, a, b)
+            # map to ids
+            for s in symbols:
+                ids.append(self.vocab.get(s, self.vocab["<unk>"]))
+        return ids
 
-        # convert tokens into ids (safe lookup)
-        token_ids = []
-        for token_list in tokens_list:
-            for token in token_list:
-                token_ids.append(self.vocab.get(token, self.vocab["<unk>"]))
-
-        return token_ids
-
+    def _merge_pair_symbols(self, symbols, a, b):
+        merged = a + b
+        out = []
+        i = 0
+        while i < len(symbols):
+            if i < len(symbols) - 1 and symbols[i] == a and symbols[i+1] == b:
+                out.append(merged)
+                i += 2
+            else:
+                out.append(symbols[i])
+                i += 1
+        return tuple(out)
 
     def decode(self, token_ids):
-        tokens = [self.inv_vocab.get(i, "<unk>") for i in token_ids]
-        text = ' '.join(tokens)
+        # basic decode: join subword tokens then remove </w>
+        toks = [self.inv_vocab.get(i, "<unk>") for i in token_ids]
+        text = "".join([t.replace("</w>", " ") for t in toks]).strip()
+        # cleanup multiple spaces
+        text = re.sub(r"\s+", " ", text)
         return text
 
-
-    def get_pair_frequencies(self, tokens_list):
-        # get frequencies of adjacent token pairs
-        pair_counts = dict()
-        for token_list in tokens_list:
-            for i in range(len(token_list)-1):
-                pair = (token_list[i], token_list[i+1])
-
-                if pair not in pair_counts:
-                    pair_counts[pair] = 1
-                else:
-                    pair_counts[pair] +=1
-        return pair_counts
-    
-    def _merge_pair(self, tokens_list,pair_to_merge):
-        #pair to merge in tuple
-        a = pair_to_merge[0]
-        b = pair_to_merge[1]
-        new_tokens_list = []
-        #processing each word one by one
-        for token_list in tokens_list:
-            merged_word = []
-            i = 0
-            while i < len(token_list):
-                if i < len(token_list)-1 and token_list[i] == a and token_list[i + 1] == b:
-                    #merge two token
-                    merged_token = a+b
-                    merged_word.append(merged_token)
-                    i +=2
-                else:
-                    merged_word.append(token_list[i])
-                    i +=1
-            #add processed word back to list
-            new_tokens_list.append(merged_word)
-        return new_tokens_list
     
 class KNN:
     def __init__(self, k=3):
