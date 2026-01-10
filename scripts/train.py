@@ -20,25 +20,28 @@ from tokenizer import BPETokenizer
 # CONFIG
 # =====================================================
 CONFIG = {
-    "vocab_size": 30000,       # keep your target
-    "max_len": 384,
-    "embed_dim": 1024,
-    "num_heads": 16,
-    "num_layers": 12,
-    "ff_hidden_dim": 4096,
+    # tokenizer / model
+    "vocab_size": 20000,     
+    "max_len": 256,          
+    "embed_dim": 512,        
+    "num_heads": 8,          
+    "num_layers": 6,        
+    "ff_hidden_dim": 2048,  
     "dropout": 0.1,
 
-    "batch_size": 8,
-    "seq_len": 256,
-    "epochs": 5,
+    # training
+    "batch_size": 16,       
+    "seq_len": 128,          
+    "epochs": 10,           
     "lr": 3e-4,
     "weight_decay": 1e-2,
     "grad_clip": 1.0,
-    "grad_accum_steps": 4,
+    "grad_accum_steps": 2,
 
     # dataloader
-    "num_workers": 4,         
+    "num_workers": 4,
 }
+
 
 CHECKPOINT_DIR = "checkpoints"
 MODEL_PATH = os.path.join(CHECKPOINT_DIR, "model.pt")
@@ -347,8 +350,8 @@ def main():
 
             epoch_loss += loss.item() * CONFIG["grad_accum_steps"]
 
-            # log every 60 seconds
-            if time.time() - last_log >= 60:
+            # log every 1800 seconds
+            if time.time() - last_log >= 1800:
                 elapsed = time.time() - start_time
                 tps = (global_step * tokens_per_step) / max(1e-9, elapsed)
                 lr = scheduler.get_last_lr()[0]
