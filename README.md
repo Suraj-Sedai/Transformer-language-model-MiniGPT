@@ -1,347 +1,226 @@
-# MiniGPT – A Minimal Transformer Language Model (From Scratch)
+# MiniGPT
+## Transformer Language Model from Scratch
 
-MiniGPT is a fully functional transformer-based language model implemented entirely from scratch in Python. The project is designed as an educational and reference implementation that demonstrates the internal mechanics of modern transformer language models (GPT-style architectures) without relying on high-level deep learning frameworks.
+MiniGPT is a **decoder-only, GPT-style Transformer language model** implemented **entirely from first principles in Python using PyTorch**.  
+The project provides a clean, transparent, and reproducible reference implementation demonstrating how modern transformer-based language models are built and trained internally—**without relying on pretrained models or high-level language modeling libraries**.
 
-This repository provides a transparent, step-by-step construction of a transformer language model, making it suitable for students, researchers, and engineers seeking a deep conceptual and practical understanding of transformer architectures.
+This repository is intended for **students, researchers, and machine learning engineers** seeking a practical, end-to-end understanding of GPT-style architectures aligned with real-world engineering practices.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [System Architecture](#system-architecture)
-- [Detailed Components](#detailed-components)
-  - [Tokenizer (BPE)](#tokenizer-bpe)
-  - [Embedding Layer](#embedding-layer)
-  - [Multi-Head Self-Attention](#multi-head-self-attention)
-  - [Feed-Forward Network](#feed-forward-network)
-  - [Layer Normalization and Residual Connections](#layer-normalization-and-residual-connections)
-- [Transformer Block](#transformer-block)
-- [Training Procedure](#training-procedure)
-- [Text Generation](#text-generation)
-- [End-to-End Pipeline](#end-to-end-pipeline)
-- [Implementation Steps](#implementation-steps)
-- [Future Improvements](#future-improvements)
-- [Use Cases](#use-cases)
-- [License](#license)
+1. [Project Overview](#project-overview)  
+2. [Design Philosophy](#design-philosophy)  
+3. [System Architecture](#system-architecture)  
+4. [Core Components](#core-components)  
+   - [Tokenizer (Byte Pair Encoding)](#tokenizer-byte-pair-encoding)  
+   - [Embedding Layer](#embedding-layer)  
+   - [Transformer Blocks](#transformer-blocks)  
+   - [Multi-Head Self-Attention](#multi-head-self-attention)  
+   - [Feed-Forward Network](#feed-forward-network)  
+5. [Model Configuration](#model-configuration)  
+6. [Training Setup](#training-setup)  
+7. [Training Results](#training-results)  
+8. [Text Generation](#text-generation)  
+9. [Checkpointing](#checkpointing)  
+10. [Use Cases](#use-cases)  
+11. [Future Improvements](#future-improvements)  
+12. [Author](#author)  
+13. [License](#license)  
 
 ---
 
-## Overview
+## Project Overview
 
-MiniGPT is a minimal yet complete implementation of a transformer-based language model. It includes all core architectural components found in modern large language models, implemented in a clear and modular fashion.
+MiniGPT implements the complete autoregressive language modeling pipeline:
 
-### Key Features
+```
+Raw Text
+   ↓
+BPE Tokenizer
+   ↓
+Token IDs
+   ↓
+Token + Positional Embeddings
+   ↓
+Transformer Blocks (× N)
+   ↓
+Layer Normalization
+   ↓
+Language Model Head
+   ↓
+Next-Token Logits
+```
 
-- Byte Pair Encoding (BPE) Tokenization
-- Token and Positional Embeddings
-- Multi-Head Self-Attention
-- Feed-Forward Networks (FFN)
-- Layer Normalization
-- Residual Connections
-- Stacked Transformer Blocks
-- Training Loop
-- Autoregressive Text Generation
+The project emphasizes:
+- Architectural correctness
+- Implementation clarity
+- Training stability
+- Full reproducibility
 
-This project emphasizes **correctness, readability, and architectural clarity** over performance optimizations.
+Rather than focusing on scale or performance tricks, MiniGPT prioritizes **understanding how GPT-style models work under the hood**.
+
+---
+
+## Design Philosophy
+
+- Implemented fully **from scratch**
+- Minimal abstraction leakage
+- No pretrained models
+- Faithful to modern GPT design conventions
+- Engineering-focused rather than academic
+
+Key design choices include:
+- Pre-LayerNorm Transformer blocks
+- Causal self-attention
+- AdamW optimization
+- Cosine learning rate scheduling
+- Mixed-precision GPU training
+- Robust checkpointing
 
 ---
 
 ## System Architecture
 
-The MiniGPT model follows the standard transformer language modeling pipeline:
+MiniGPT follows a standard **decoder-only Transformer architecture** for autoregressive language modeling.
 
-Raw Text
+### High-Level Flow
 
-↓
-
-Tokenizer (BPE)
-
-↓
-
-Token IDs
-
-↓
-
-Embedding + Positional Encoding
-
-↓
-
-Transformer Blocks (N Layers)
-
-↓
-
-Language Model Head (Linear Layer)
-
-↓
-
-Output Tokens
-
-
-### Architecture Flowchart
-
-+----------------+
-| Raw Text |
-+--------+-------+
-|
-v
-+--------+-------+
-| Tokenizer (BPE)|
-+--------+-------+
-|
-v
-+----------------+
-| Token IDs |
-+--------+-------+
-|
-v
-+-----------------------+
-| Embedding + Position |
-+-----------+-----------+
-|
-v
-+-----------------------+
-| Transformer Block(s) |
-| + MHA |
-| + FFN |
-| + Residuals |
-+-----------+-----------+
-|
-v
-+-----------------------+
-| LM Head (Linear Layer)|
-+-----------+-----------+
-|
-v
-+----------------+
-| Output Tokens |
-+----------------+
-
+```
+Input Tokens
+   ↓
+Embedding Layer
+   ↓
+N × Transformer Blocks
+   ↓
+Final LayerNorm
+   ↓
+Linear Language Model Head (Weight Tied)
+   ↓
+Vocabulary Logits
+```
 
 ---
 
-## Detailed Components
+## Core Components
 
-### Tokenizer (BPE)
+### Tokenizer (Byte Pair Encoding)
 
-**Purpose:**  
-Convert raw text into token IDs using Byte Pair Encoding.
+- Custom Byte Pair Encoding (BPE) tokenizer implemented from scratch
+- Learns merge rules directly from training data
+- Converts raw text to integer token IDs
+- Supports both encoding and decoding
 
-**Core Responsibilities:**
-- Build vocabulary
-- Train merge rules
-- Encode strings into token IDs
-- Decode token IDs back into text
-
-**Primary Class:**
-- `BPETokenizer`
-  - `train()`
-  - `build_vocab()`
-  - `encode()`
-  - `decode()`
+**Primary class:** `BPETokenizer`
 
 ---
 
 ### Embedding Layer
 
-**Purpose:**
-- Convert token IDs into dense vector representations
-- Inject positional information into token embeddings
+- Learnable token embeddings
+- Learnable positional embeddings
+- Combined and passed into the Transformer stack
 
-**Primary Class:**
-- `EmbeddingLayer`
-  - Token embeddings
-  - Positional embeddings
-  - `forward()`
+---
+
+### Transformer Blocks
+
+Each Transformer block follows a **Pre-Layer Normalization (Pre-LN)** design:
+
+```
+x = x + MultiHeadSelfAttention(LayerNorm(x))
+x = x + FeedForwardNetwork(LayerNorm(x))
+```
 
 ---
 
 ### Multi-Head Self-Attention
 
-**Purpose:**  
-Enable each token to attend to all previous tokens in the sequence, capturing contextual dependencies.
-
-**Detailed Flow:**
-
-Input X
-|
-+--+--+
-|Linear| → Q
-+-----+
-|Linear| → K
-+-----+
-|Linear| → V
-+--+--+
-|
-v
-Attention(Q, K, V)
-|
-v
-Concatenate Heads
-|
-v
-Output Linear Layer
-
-
-**Primary Classes:**
-- `AttentionHead`
-- `MultiHeadAttention`
+- Scaled dot-product attention
+- Multiple attention heads
+- Causal masking to enforce autoregressive behavior
+- Output projection back to embedding dimension
 
 ---
 
 ### Feed-Forward Network
 
-**Purpose:**  
-Apply a position-wise two-layer MLP to each token independently.
-
-**Primary Class:**
-- `FeedForward`
+- Two-layer position-wise MLP
+- GELU activation
+- Applied independently to each token position
 
 ---
 
-### Layer Normalization and Residual Connections
+## Model Configuration
 
-Each transformer block follows the standard residual pattern:
+### Architecture
 
-x = x + MultiHeadAttention(x)
-x = x + FeedForward(x)
+| Component | Value |
+|---------|-------|
+| Model Type | Decoder-only GPT |
+| Transformer Layers | 6 |
+| Embedding Dimension | 512 |
+| Attention Heads | 8 |
+| FFN Hidden Dimension | 2048 |
+| Max Context Length | 256 |
+| Dropout | 0.1 |
 
+### Tokenizer
 
-**Primary Class:**
-- `LayerNorm`
+| Component | Value |
+|---------|-------|
+| Tokenizer Type | Custom BPE |
+| Vocabulary Size | 20,000 |
+| Merge Operations | 19,059 |
 
----
+### Parameters
 
-## Transformer Block
-
-A single transformer block consists of the following structure:
-
-+-------------------+
-| Input (X) |
-+---------+---------+
-|
-v
-+-------------------+
-| LayerNorm |
-+-------------------+
-|
-v
-+-------------------+
-| Multi-Head Attn |
-+-------------------+
-|
-v
-+-------------------+
-| Residual Add |
-+-------------------+
-|
-v
-+-------------------+
-| LayerNorm |
-+-------------------+
-|
-v
-+-------------------+
-| Feed-Forward |
-+-------------------+
-|
-v
-+-------------------+
-| Output (X') |
-+-------------------+
-
-
-**Primary Class:**
-- `TransformerBlock`
-  - `forward()`
+| Metric | Value |
+|------|------|
+| Total Parameters | 29,274,112 |
+| Trainable Parameters | 29,274,112 |
+| Model Size (fp32) | 111.67 MB |
 
 ---
 
-## Training Procedure
+## Training Setup
 
-The training process follows these steps:
+- **Dataset:** WikiText-2
+- **Objective:** Autoregressive next-token prediction
+- **Optimizer:** AdamW
+- **Scheduler:** Cosine Annealing
+- **Precision:** Mixed precision (fp16 on GPU)
+- **Techniques:** Gradient accumulation, gradient clipping
 
-1. Load dataset
-2. Train the tokenizer
-3. Convert raw text into token IDs
-4. Construct training batches
-5. Perform forward pass
-6. Compute loss
-7. Backpropagation
-8. Update model parameters
-9. Save trained model
+---
+
+## Training Results
+
+| Metric | Value |
+|------|------|
+| Final Training Perplexity | 2.74 |
+| Throughput | ~84,000 tokens/sec (GPU) |
+| Training Duration | ~11.5 hours |
+
+Training loss decreased smoothly and monotonically, indicating correct causal masking, stable optimization, and a valid implementation.
 
 ---
 
 ## Text Generation
 
-MiniGPT supports autoregressive text generation.
-
-### Generation Algorithm
-
-1. Start with prompt tokens
-2. Repeatedly:
-   - Feed tokens into the model
-   - Obtain logits for the next token
-   - Select next token (greedy or sampling)
-   - Append token to the sequence
+MiniGPT supports **autoregressive text generation** using greedy or sampling-based decoding.
 
 ---
 
-## End-to-End Pipeline
+## Checkpointing
 
-Raw Text
-↓
-Tokenizer (BPE)
-↓
-Token IDs
-↓
-Embedding + Position
-↓
-Transformer Block 1
-↓
-Transformer Block 2
-↓
-...
-↓
-Transformer Block N
-↓
-Linear Projection
-↓
-Softmax
-↓
-Next Token Prediction
-
-
----
-
-## Implementation Steps
-
-1. Implement Tokenizer (BPE)
-2. Create Dataset and DataLoader
-3. Implement mathematical helpers (e.g., softmax, matrix multiplication)
-4. Implement Embedding Layer
-5. Implement Positional Encoding
-6. Implement Attention Head
-7. Implement Multi-Head Attention
-8. Implement Feed-Forward Network
-9. Implement Transformer Block
-10. Implement Transformer Model
-11. Implement Training Loop
-12. Implement Text Generation
-
----
-
-## Future Improvements
-
-Planned enhancements include:
-
-- Dropout regularization
-- Improved weight initialization strategies
-- Advanced optimizers (e.g., AdamW)
-- GPT-style decoding (top-k, top-p)
-- Attention masking
-- Training metrics and evaluation tools
+```
+checkpoints/
+├── model.pt
+├── tokenizer.json
+└── config.json
+```
 
 ---
 
@@ -354,12 +233,21 @@ Planned enhancements include:
 
 ---
 
-## License
+## Future Improvements
 
-This project is released for educational and research purposes.  
-Please review the repository for license details before commercial use.
+- Top-k and top-p decoding
+- Longer context windows
+- Larger datasets
+- Optimized attention
 
 ---
 
-**Author:** Suraj Sedai  
-**Project:** MiniGPT – A Minimal Transformer Language Model
+## Author
+
+**Suraj Sedai**
+
+---
+
+## License
+
+Educational and research use only.
